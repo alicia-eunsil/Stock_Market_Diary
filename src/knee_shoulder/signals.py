@@ -77,6 +77,24 @@ def score_symbol(history: pd.DataFrame, symbol: str, name: str, thresholds: Sign
             shoulder_score += 5
             shoulder_reasons.append("20일선 이탈")
 
+        # Trend continuation bonus:
+        # existing logic favored "20일선 회복" (cross-up) but under-scored already-strong leaders.
+        if (
+            pd.notna(latest["ma_20"])
+            and pd.notna(latest.get("ma_60"))
+            and latest["close"] > latest["ma_20"]
+            and latest["ma_20"] > latest["ma_60"]
+            and latest["close"] > prev["close"]
+        ):
+            knee_score += 15
+            knee_reasons.append("20일선 상회 추세")
+
+        # Momentum expansion bonus for strong daily move with meaningful volume.
+        pct_change = ((latest["close"] / prev["close"]) - 1.0) * 100.0 if prev["close"] else 0.0
+        if pct_change >= 3.0 and pd.notna(latest["vol_ratio_20"]) and latest["vol_ratio_20"] >= 1.1:
+            knee_score += 15
+            knee_reasons.append("상승 탄력 확대")
+
     knee_score = min(knee_score, 100)
     shoulder_score = min(shoulder_score, 100)
     signal_date = str(latest["date"])
