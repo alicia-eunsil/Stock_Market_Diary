@@ -342,6 +342,75 @@ def build_trade_plan(selected_row: pd.Series) -> dict:
     }
 
 
+def build_action_list(signals: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
+    if signals.empty:
+        return pd.DataFrame()
+
+    frame = signals.copy()
+    for col in ["knee_score", "shoulder_score", "vol_ratio_20", "pct_change", "close"]:
+        if col in frame.columns:
+            frame[col] = pd.to_numeric(frame[col], errors="coerce")
+
+    # Buy priority: strong knee + meaningful volume expansion + not overly extended day spike
+    buy = frame[
+        (frame["knee_score"] >= CANDIDATE_DISPLAY_MIN_SCORE)
+        & (frame["knee_score"] > frame["shoulder_score"])
+        & (frame["vol_ratio_20"] >= 1.2)
+        & (frame["pct_change"] <= 12.0)
+    ].copy()
+    buy["action"] = "BUY"
+    buy["priority_score"] = buy["knee_score"] + buy["vol_ratio_20"] * 10 - buy["pct_change"].clip(lower=0)
+
+    # Sell priority: strong shoulder + weakness confirmation
+    sell = frame[
+        (frame["shoulder_score"] >= CANDIDATE_DISPLAY_MIN_SCORE)
+        & (frame["shoulder_score"] > frame["knee_score"])
+        & (frame["pct_change"] <= 0)
+    ].copy()
+    sell["action"] = "SELL"
+    sell["priority_score"] = sell["shoulder_score"] + (sell["vol_ratio_20"].fillna(1.0) * 5) + abs(sell["pct_change"])
+
+    action = pd.concat([buy, sell], ignore_index=True)
+    if action.empty:
+        return pd.DataFrame()
+
+    action = action.sort_values("priority_score", ascending=False).head(top_n).reset_index(drop=True)
+
+    plans = []
+    for row in action.itertuples(index=False):
+        plan = build_trade_plan(pd.Series(row._asdict()))
+        if row.action == "SELL":
+            # Force SELL direction in card for short-side action rows.
+            plan["direction"] = "SHORT"
+        plans.append(plan)
+
+    action["direction"] = [p["direction"] for p in plans]
+    action["entry"] = [p["entry"] for p in plans]
+    action["stop"] = [p["stop"] for p in plans]
+    action["target"] = [p["target"] for p in plans]
+    action["qty"] = [p["qty"] for p in plans]
+    action["est_loss"] = [p["est_loss"] for p in plans]
+    action["est_gain"] = [p["est_gain"] for p in plans]
+
+    return action[
+        [
+            "action",
+            "symbol",
+            "name",
+            "knee_score",
+            "shoulder_score",
+            "pct_change",
+            "vol_ratio_20",
+            "entry",
+            "stop",
+            "target",
+            "qty",
+            "est_loss",
+            "est_gain",
+        ]
+    ]
+
+
 def summarize_side(frame: pd.DataFrame, score_column: str, success_column: str, direction: str) -> dict:
     candidates = frame[(frame[score_column] >= CANDIDATE_DISPLAY_MIN_SCORE) & frame["ret_5d"].notna()].copy()
     if candidates.empty:
@@ -406,6 +475,53 @@ analysis_date = signal_date or "-"
 header_cols[0].metric("Analysis Date", analysis_date)
 header_cols[1].metric("Knee Strong", int((signals_df["knee_grade"] == "Strong").sum()))
 header_cols[2].metric("Shoulder Strong", int((signals_df["shoulder_grade"] == "Strong").sum()))
+
+st.subheader("오늘의 실행 리스트")
+st.caption("아래 항목은 규칙 기반으로 추린 즉시 실행 후보입니다.")
+action_df = build_action_list(signals_df, top_n=6)
+if action_df.empty:
+    st.info("오늘은 조건을 만족한 BUY/SELL 실행 후보가 없습니다. 관망(WATCH) 권장.")
+else:
+    quick_view = action_df.copy()
+    quick_view["진입가"] = quick_view["entry"].map(format_currency)
+    quick_view["손절가"] = quick_view["stop"].map(format_currency)
+    quick_view["목표가"] = quick_view["target"].map(format_currency)
+    quick_view["예상손실"] = quick_view["est_loss"].map(format_currency)
+    quick_view["예상이익"] = quick_view["est_gain"].map(format_currency)
+    quick_view["권장수량"] = quick_view["qty"].map(lambda v: f"{int(v):,}주")
+    quick_view = quick_view.rename(
+        columns={
+            "action": "액션",
+            "symbol": "종목코드",
+            "name": "종목명",
+            "knee_score": "매수점수",
+            "shoulder_score": "매도점수",
+            "pct_change": "전일대비등락률",
+            "vol_ratio_20": "거래량비율",
+        }
+    )
+    st.dataframe(
+        quick_view[
+            [
+                "액션",
+                "종목코드",
+                "종목명",
+                "매수점수",
+                "매도점수",
+                "전일대비등락률",
+                "거래량비율",
+                "진입가",
+                "손절가",
+                "목표가",
+                "권장수량",
+                "예상손실",
+                "예상이익",
+            ]
+        ],
+        use_container_width=True,
+        hide_index=True,
+        height=260,
+    )
 
 knee_view = signals_df[signals_df["knee_score"] >= CANDIDATE_DISPLAY_MIN_SCORE].copy().sort_values(
     ["knee_score", "pct_change"], ascending=[False, False]
