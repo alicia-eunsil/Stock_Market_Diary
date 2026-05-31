@@ -8,7 +8,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from src.knee_shoulder.config import load_config
-from src.knee_shoulder.storage import load_existing_history, load_validation_history
+from src.knee_shoulder.storage import load_all_signal_files, load_existing_history, load_validation_history
 
 
 st.set_page_config(page_title="Knee Shoulder Monitor", page_icon="🌻", layout="wide")
@@ -411,6 +411,84 @@ def build_action_list(signals: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
     ]
 
 
+def build_historical_recommendations(signals_all: pd.DataFrame, top_n: int = 6) -> pd.DataFrame:
+    if signals_all.empty:
+        return pd.DataFrame()
+    if "date" not in signals_all.columns:
+        return pd.DataFrame()
+
+    results = []
+    for signal_date, day_frame in signals_all.groupby(signals_all["date"].astype(str), sort=True):
+        day_actions = build_action_list(day_frame, top_n=top_n)
+        if day_actions.empty:
+            continue
+        day_actions = day_actions.copy()
+        day_actions["signal_date"] = str(signal_date)
+        results.append(day_actions)
+
+    if not results:
+        return pd.DataFrame()
+    return pd.concat(results, ignore_index=True)
+
+
+def _select_return_column(frame: pd.DataFrame, preferred_horizon_days: int) -> str | None:
+    preferred = f"ret_{preferred_horizon_days}d"
+    if preferred in frame.columns:
+        return preferred
+    fallback = [col for col in ["ret_20d", "ret_10d", "ret_5d", "ret_3d", "ret_1d"] if col in frame.columns]
+    if not fallback:
+        return None
+    return fallback[0]
+
+
+def summarize_recommendation_performance(frame: pd.DataFrame, horizon_days: int, lookback_dates: int) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame()
+
+    ret_col = _select_return_column(frame, horizon_days)
+    if not ret_col:
+        return pd.DataFrame()
+
+    dates = sorted(frame["signal_date"].astype(str).unique())
+    target_dates = set(dates[-lookback_dates:])
+    scope = frame[frame["signal_date"].astype(str).isin(target_dates)].copy()
+    scope = scope[scope[ret_col].notna()].copy()
+    if scope.empty:
+        return pd.DataFrame()
+
+    # BUY는 수익률 그대로, SELL은 하락시 이익이므로 부호 반전.
+    scope["strategy_ret"] = scope[ret_col].astype(float)
+    scope.loc[scope["action"] == "SELL", "strategy_ret"] = -scope.loc[scope["action"] == "SELL", "strategy_ret"]
+
+    out = []
+    for action, group in scope.groupby("action", sort=False):
+        ret = group["strategy_ret"]
+        out.append(
+            {
+                "구분": action,
+                "평가건수": len(group),
+                "평균수익률": ret.mean(),
+                "중앙값": ret.median(),
+                "승률": (ret > 0).mean() * 100,
+                "총합수익률": ret.sum(),
+            }
+        )
+
+    total_ret = scope["strategy_ret"]
+    out.append(
+        {
+            "구분": "TOTAL",
+            "평가건수": len(scope),
+            "평균수익률": total_ret.mean(),
+            "중앙값": total_ret.median(),
+            "승률": (total_ret > 0).mean() * 100,
+            "총합수익률": total_ret.sum(),
+        }
+    )
+    summary = pd.DataFrame(out)
+    return summary
+
+
 def summarize_side(frame: pd.DataFrame, score_column: str, success_column: str, direction: str) -> dict:
     candidates = frame[(frame[score_column] >= CANDIDATE_DISPLAY_MIN_SCORE) & frame["ret_5d"].notna()].copy()
     if candidates.empty:
@@ -465,6 +543,7 @@ def format_recent_evaluation(frame: pd.DataFrame, side: str) -> pd.DataFrame:
 
 signals_df, signal_date = load_latest_signals(paths["signal_dir"])
 validation_df = load_validation_history(Path(paths["validation_file"]))
+signals_history_df = load_all_signal_files(paths["signal_dir"])
 
 if signals_df.empty:
     st.warning("No signal file found yet. Run `python3 run_daily.py` first.")
@@ -626,6 +705,36 @@ if not validation_df.empty:
     if eval_view.empty:
         st.info("아직 표시할 예측평가 데이터가 없습니다.")
     else:
+        st.markdown("**추천 성과 추적 (내 추천 후보가 실제로 어땠는지)**")
+        rec_history = build_historical_recommendations(signals_history_df, top_n=6)
+        if rec_history.empty:
+            st.info("추천 이력 데이터가 없습니다.")
+        else:
+            merged_rec = rec_history.merge(
+                eval_view,
+                how="left",
+                on=["signal_date", "symbol", "name"],
+                suffixes=("_rec", ""),
+            )
+            perf_tabs = st.tabs(["1주(5거래일)", "2주(10거래일)", "1개월(20거래일)"])
+            perf_specs = [
+                ("1주(5거래일)", 5, 5),
+                ("2주(10거래일)", 10, 10),
+                ("1개월(20거래일)", 20, 20),
+            ]
+            for tab, spec in zip(perf_tabs, perf_specs):
+                _, horizon_days, lookback_dates = spec
+                with tab:
+                    summary = summarize_recommendation_performance(merged_rec, horizon_days, lookback_dates)
+                    if summary.empty:
+                        st.info("해당 기간은 아직 평가 완료된 추천 결과가 부족합니다.")
+                    else:
+                        summary_view = summary.copy()
+                        for col in ["평균수익률", "중앙값", "총합수익률"]:
+                            summary_view[col] = summary_view[col].map(format_return)
+                        summary_view["승률"] = summary_view["승률"].map(format_rate)
+                        st.dataframe(summary_view, use_container_width=True, hide_index=True)
+
         completed_view = eval_view[eval_view["ret_5d"].notna()].copy()
         if completed_view.empty:
             st.info("5일 평가가 완료된 후보가 아직 없습니다.")
