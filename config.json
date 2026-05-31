@@ -18,6 +18,8 @@
     "incremental_recheck_days": 3,
     "min_rows_required": 60,
     "min_volume": 100000,
+    "min_turnover_rebound": 150000000000,
+    "min_turnover_trend": 300000000000,
     "signal_threshold": 65,
     "strong_threshold": 80,
     "request_sleep_sec": 0.12
@@ -32,5 +34,11 @@
     "stop_loss_pct": 3.0,
     "target_profit_pct": 6.0,
     "account_size_krw": 10000000
+  },
+  "risk_control": {
+    "roundtrip_cost_bps": 25,
+    "max_mdd_stop_pct": -8.0,
+    "oos_test_days": 20,
+    "oos_train_days": 60
   }
 }

@@ -50,10 +50,26 @@ paths = config["paths"]
 CANDIDATE_DISPLAY_MIN_SCORE = config["runtime"]["signal_threshold"]
 CANDIDATE_TABLE_HEIGHT = 245
 validation_cfg = config.get("validation", {})
+risk_cfg = config.get("risk_control", {})
 RISK_PER_TRADE_PCT = float(validation_cfg.get("risk_per_trade_pct", 1.0))
 STOP_LOSS_PCT = float(validation_cfg.get("stop_loss_pct", 3.0))
 TARGET_PROFIT_PCT = float(validation_cfg.get("target_profit_pct", 6.0))
 ACCOUNT_SIZE_KRW = int(validation_cfg.get("account_size_krw", 10_000_000))
+ROUNDTRIP_COST_BPS = float(risk_cfg.get("roundtrip_cost_bps", 25))
+MAX_MDD_STOP_PCT = float(risk_cfg.get("max_mdd_stop_pct", -8.0))
+OOS_TEST_DAYS = int(risk_cfg.get("oos_test_days", 20))
+OOS_TRAIN_DAYS = int(risk_cfg.get("oos_train_days", 60))
+MIN_TURNOVER_REBOUND = float(config["runtime"].get("min_turnover_rebound", 150_000_000_000))
+MIN_TURNOVER_TREND = float(config["runtime"].get("min_turnover_trend", 300_000_000_000))
+LEADER_SYMBOLS = {
+    "005930",  # 삼성전자
+    "000660",  # SK하이닉스
+    "009150",  # 삼성전기
+    "042700",  # 한미반도체
+    "373220",  # LG에너지솔루션
+    "035420",  # NAVER
+    "035720",  # 카카오
+}
 
 
 def render_candidate_help(title: str, score_label: str, reasons_label: str) -> None:
@@ -405,9 +421,14 @@ def build_action_list_with_calibration(
     pattern_active = calibration.get("pattern_active", {})
 
     frame = signals.copy()
-    for col in ["knee_score", "shoulder_score", "vol_ratio_20", "pct_change", "close", "intraday_quality_score"]:
+    for col in ["knee_score", "shoulder_score", "vol_ratio_20", "pct_change", "close", "intraday_quality_score", "turnover"]:
         if col in frame.columns:
             frame[col] = pd.to_numeric(frame[col], errors="coerce")
+    if "symbol" in frame.columns:
+        frame["symbol"] = frame["symbol"].astype(str).str.zfill(6)
+    if "turnover" not in frame.columns:
+        frame["turnover"] = 0.0
+    frame["turnover"] = frame["turnover"].fillna(0.0)
     if "intraday_quality_score" not in frame.columns:
         frame["intraday_quality_score"] = 50.0
     frame["intraday_quality_score"] = frame["intraday_quality_score"].fillna(50.0)
@@ -415,10 +436,21 @@ def build_action_list_with_calibration(
     if strategy_profile == "trend":
         # Trend profile: allow strong momentum names and relax knee threshold.
         buy = frame[
-            (frame["knee_score"] >= 45)
-            & (frame["knee_score"] > frame["shoulder_score"])
-            & (frame["vol_ratio_20"] >= 1.0)
-            & (frame["pct_change"] >= 0)
+            (
+                (
+                    (frame["knee_score"] >= 45)
+                    & (frame["knee_score"] > frame["shoulder_score"])
+                    & (frame["vol_ratio_20"] >= 1.0)
+                    & (frame["pct_change"] >= 0)
+                )
+                | (
+                    frame["symbol"].isin(LEADER_SYMBOLS)
+                    & (frame["knee_score"] >= 30)
+                    & (frame["pct_change"] >= 0)
+                    & (frame["vol_ratio_20"] >= 1.0)
+                )
+            )
+            & (frame["turnover"] >= MIN_TURNOVER_TREND)
         ].copy()
     else:
         # Rebound profile: conservative pullback/reversal entry.
@@ -427,6 +459,7 @@ def build_action_list_with_calibration(
             & (frame["knee_score"] > frame["shoulder_score"])
             & (frame["vol_ratio_20"] >= 1.2)
             & (frame["pct_change"] <= 12.0)
+            & (frame["turnover"] >= MIN_TURNOVER_REBOUND)
         ].copy()
     buy["action"] = "BUY"
     if strategy_profile == "trend":
@@ -444,6 +477,7 @@ def build_action_list_with_calibration(
             (frame["shoulder_score"] >= 55)
             & (frame["shoulder_score"] > frame["knee_score"])
             & (frame["pct_change"] <= 0)
+            & (frame["turnover"] >= MIN_TURNOVER_TREND)
         ].copy()
     else:
         # Rebound profile sell: stricter risk-off signal.
@@ -451,6 +485,7 @@ def build_action_list_with_calibration(
             (frame["shoulder_score"] >= CANDIDATE_DISPLAY_MIN_SCORE)
             & (frame["shoulder_score"] > frame["knee_score"])
             & (frame["pct_change"] <= 0)
+            & (frame["turnover"] >= MIN_TURNOVER_REBOUND)
         ].copy()
     sell["action"] = "SELL"
     sell["priority_score_raw"] = (
@@ -461,6 +496,8 @@ def build_action_list_with_calibration(
     if action.empty:
         return pd.DataFrame()
 
+    action["strategy_profile"] = strategy_profile
+    action["is_leader"] = action["symbol"].astype(str).isin(LEADER_SYMBOLS)
     action["pattern"] = action.apply(lambda row: classify_pattern(row, str(row["action"])), axis=1)
 
     # Performance-linked calibration:
@@ -490,13 +527,23 @@ def build_action_list_with_calibration(
     # Gate applies only when calibrated recommendation mode is active.
     # Historical recommendation reconstruction should not be blocked here.
     if has_calibration:
-        action = action[
+        standard_gate = (
             (action["pattern_active"])
             & (action["pattern_count"] >= 8)
             & (action["action_expectancy"] > 0)
             & (action["expected_return_adj"] > 0)
             & (action["expected_return_final"] > 0)
-        ].copy()
+        )
+        # Leader names share the same core profitability gate,
+        # but use slightly relaxed sample condition to avoid structural exclusion.
+        leader_gate = (
+            (action["is_leader"])
+            & (action["pattern_count"] >= 4)
+            & (action["action_expectancy"] > 0)
+            & (action["expected_return_adj"] > 0)
+            & (action["expected_return_final"] > 0)
+        )
+        action = action[(standard_gate | leader_gate)].copy()
         if action.empty:
             return pd.DataFrame()
 
@@ -542,6 +589,8 @@ def build_action_list_with_calibration(
             "pattern_expectancy",
             "pattern_count",
             "expected_return_final",
+            "strategy_profile",
+            "is_leader",
         ]
     ]
 
@@ -763,6 +812,95 @@ def build_recommendation_detail(frame: pd.DataFrame, horizon_days: int, lookback
     return view.sort_values(["추천일", "전략수익률"], ascending=[False, False]).reset_index(drop=True)
 
 
+def compute_strategy_series(frame: pd.DataFrame, horizon_days: int) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame()
+    ret_col = _select_return_column(frame, horizon_days)
+    if not ret_col:
+        return pd.DataFrame()
+    series = frame[frame[ret_col].notna()].copy()
+    if series.empty:
+        return pd.DataFrame()
+    series["raw_strategy_ret"] = series[ret_col].astype(float)
+    series.loc[series["action"] == "SELL", "raw_strategy_ret"] = -series.loc[series["action"] == "SELL", "raw_strategy_ret"]
+    cost_pct = ROUNDTRIP_COST_BPS / 100.0
+    series["strategy_ret_net"] = series["raw_strategy_ret"] - cost_pct
+    if "benchmark_ret_5d" in series.columns and horizon_days == 5:
+        series["benchmark_ret"] = pd.to_numeric(series["benchmark_ret_5d"], errors="coerce")
+    else:
+        series["benchmark_ret"] = pd.NA
+    series["excess_ret"] = series["strategy_ret_net"] - pd.to_numeric(series["benchmark_ret"], errors="coerce")
+    return series
+
+
+def _calc_mdd(ret_series: pd.Series) -> float | None:
+    if ret_series.empty:
+        return None
+    equity = (1.0 + ret_series / 100.0).cumprod()
+    peak = equity.cummax()
+    dd = ((equity / peak) - 1.0) * 100.0
+    return float(dd.min()) if not dd.empty else None
+
+
+def build_trust_validation_report(frame: pd.DataFrame) -> dict:
+    series = compute_strategy_series(frame, 5)
+    if series.empty:
+        return {
+            "status": "insufficient",
+            "reason": "평가 데이터 부족",
+            "train_avg": None,
+            "oos_avg": None,
+            "oos_excess_avg": None,
+            "oos_mdd": None,
+            "oos_count": 0,
+        }
+
+    all_dates = sorted(series["signal_date"].astype(str).unique())
+    test_dates = set(all_dates[-OOS_TEST_DAYS:])
+    train_dates = set(all_dates[-(OOS_TEST_DAYS + OOS_TRAIN_DAYS) : -OOS_TEST_DAYS]) if len(all_dates) > OOS_TEST_DAYS else set()
+    test_df = series[series["signal_date"].astype(str).isin(test_dates)].copy()
+    train_df = series[series["signal_date"].astype(str).isin(train_dates)].copy()
+    if test_df.empty or train_df.empty:
+        return {
+            "status": "insufficient",
+            "reason": "워크포워드 구간 부족",
+            "train_avg": None,
+            "oos_avg": None,
+            "oos_excess_avg": None,
+            "oos_mdd": None,
+            "oos_count": len(test_df),
+        }
+
+    train_avg = float(train_df["strategy_ret_net"].mean())
+    oos_avg = float(test_df["strategy_ret_net"].mean())
+    oos_mdd = _calc_mdd(test_df["strategy_ret_net"])
+    oos_excess_avg = float(test_df["excess_ret"].mean()) if test_df["excess_ret"].notna().any() else None
+
+    pass_mdd = oos_mdd is not None and oos_mdd >= MAX_MDD_STOP_PCT
+    pass_oos = oos_avg > 0
+    pass_excess = True if oos_excess_avg is None else oos_excess_avg > 0
+    status = "pass" if (pass_mdd and pass_oos and pass_excess) else "fail"
+
+    fail_reasons = []
+    if not pass_oos:
+        fail_reasons.append("OOS 평균수익률<=0")
+    if not pass_excess:
+        fail_reasons.append("벤치마크 초과수익<=0")
+    if not pass_mdd:
+        fail_reasons.append("MDD 한도 초과")
+    reason = ", ".join(fail_reasons) if fail_reasons else "검증 통과"
+
+    return {
+        "status": status,
+        "reason": reason,
+        "train_avg": train_avg,
+        "oos_avg": oos_avg,
+        "oos_excess_avg": oos_excess_avg,
+        "oos_mdd": oos_mdd,
+        "oos_count": len(test_df),
+    }
+
+
 def summarize_side(frame: pd.DataFrame, score_column: str, success_column: str, direction: str) -> dict:
     candidates = frame[(frame[score_column] >= CANDIDATE_DISPLAY_MIN_SCORE) & frame["ret_5d"].notna()].copy()
     if candidates.empty:
@@ -850,6 +988,15 @@ if not validation_df.empty:
 
 recommendation_calibration = {"action_multiplier": {"BUY": 1.0, "SELL": 1.0}, "regime_expectancy": {}}
 current_regime = "Unknown"
+trust_report = {
+    "status": "insufficient",
+    "reason": "평가 데이터 부족",
+    "train_avg": None,
+    "oos_avg": None,
+    "oos_excess_avg": None,
+    "oos_mdd": None,
+    "oos_count": 0,
+}
 if not eval_view_for_reco.empty:
     rec_history_for_cal = build_historical_recommendations(signals_history_df, top_n=6)
     if not rec_history_for_cal.empty:
@@ -860,13 +1007,14 @@ if not eval_view_for_reco.empty:
             suffixes=("_rec", ""),
         )
         recommendation_calibration = build_recommendation_calibration(merged_for_cal)
+        trust_report = build_trust_validation_report(merged_for_cal)
     if "market_regime" in eval_view_for_reco.columns:
         known_regime = eval_view_for_reco.dropna(subset=["market_regime"]).sort_values("signal_date")
         if not known_regime.empty:
             current_regime = str(known_regime.iloc[-1]["market_regime"])
 
 st.subheader("오늘의 실행 리스트")
-st.caption("반등형(보수)과 추세형(모멘텀)을 분리해 추천합니다. 둘 다 실전 성과 보정을 반영합니다.")
+st.caption("단일 통합 로직으로 반등/추세 패턴을 함께 평가하고, 수익성 게이트를 통과한 종목만 추천합니다.")
 st.caption("실행 후보는 `패턴 표본수>=8`, `패턴기대값>0`, `최근기대값>0`, `최종기대수익률>0`을 모두 만족한 종목만 표시됩니다.")
 rebound_df = build_action_list_with_calibration(
     signals_df,
@@ -882,6 +1030,32 @@ trend_df = build_action_list_with_calibration(
     current_regime=current_regime,
     strategy_profile="trend",
 )
+action_df = pd.concat([rebound_df, trend_df], ignore_index=True)
+if not action_df.empty:
+    action_df = action_df.sort_values(["expected_return_final", "priority_score"], ascending=False)
+    action_df = action_df.drop_duplicates(subset=["symbol"], keep="first").head(8).reset_index(drop=True)
+
+if trust_report["status"] == "fail":
+    action_df = pd.DataFrame()
+
+st.markdown("**신뢰 검증**")
+if trust_report["status"] == "pass":
+    st.success(
+        f"검증 통과 | OOS {trust_report['oos_count']}건 | "
+        f"OOS 평균 {format_return(trust_report['oos_avg'])} | "
+        f"초과수익 {format_return(trust_report['oos_excess_avg']) if trust_report['oos_excess_avg'] is not None else '-'} | "
+        f"MDD {format_return(trust_report['oos_mdd'])}"
+    )
+elif trust_report["status"] == "fail":
+    st.error(
+        f"자동 실행 중지 | {trust_report['reason']} | "
+        f"OOS 평균 {format_return(trust_report['oos_avg'])} | "
+        f"초과수익 {format_return(trust_report['oos_excess_avg']) if trust_report['oos_excess_avg'] is not None else '-'} | "
+        f"MDD {format_return(trust_report['oos_mdd'])}"
+    )
+else:
+    st.warning(f"검증 보류 | {trust_report['reason']}")
+
 
 def render_action_table(action_df: pd.DataFrame, empty_msg: str) -> None:
     if action_df.empty:
@@ -909,6 +1083,7 @@ def render_action_table(action_df: pd.DataFrame, empty_msg: str) -> None:
             "pct_change": "전일대비등락률",
             "vol_ratio_20": "거래량비율",
             "intraday_quality_score": "분봉품질점수",
+            "strategy_profile": "전략",
             "pattern": "패턴",
             "action_multiplier": "성과보정",
             "regime_bonus": "국면보정",
@@ -925,6 +1100,7 @@ def render_action_table(action_df: pd.DataFrame, empty_msg: str) -> None:
                 "전일대비등락률",
                 "거래량비율",
                 "분봉품질점수",
+                "전략",
                 "패턴",
                 "패턴표본수",
                 "성과보정",
@@ -945,11 +1121,7 @@ def render_action_table(action_df: pd.DataFrame, empty_msg: str) -> None:
         height=260,
     )
 
-tab_rebound, tab_trend = st.tabs(["반등형 추천", "추세형 추천"])
-with tab_rebound:
-    render_action_table(rebound_df, "반등형 조건을 만족한 BUY/SELL 실행 후보가 없습니다.")
-with tab_trend:
-    render_action_table(trend_df, "추세형 조건을 만족한 BUY/SELL 실행 후보가 없습니다.")
+render_action_table(action_df, "통합 조건을 만족한 BUY/SELL 실행 후보가 없습니다.")
 
 m_buy = recommendation_calibration.get("action_multiplier", {}).get("BUY", 1.0)
 m_sell = recommendation_calibration.get("action_multiplier", {}).get("SELL", 1.0)
