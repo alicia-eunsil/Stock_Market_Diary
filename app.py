@@ -343,8 +343,21 @@ def build_trade_plan(selected_row: pd.Series) -> dict:
 
 
 def build_action_list(signals: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
+    return build_action_list_with_calibration(signals, top_n=top_n, calibration=None, current_regime="Unknown")
+
+
+def build_action_list_with_calibration(
+    signals: pd.DataFrame,
+    top_n: int = 5,
+    calibration: dict | None = None,
+    current_regime: str = "Unknown",
+) -> pd.DataFrame:
     if signals.empty:
         return pd.DataFrame()
+
+    calibration = calibration or {}
+    action_multiplier = calibration.get("action_multiplier", {"BUY": 1.0, "SELL": 1.0})
+    regime_expectancy = calibration.get("regime_expectancy", {})
 
     frame = signals.copy()
     for col in ["knee_score", "shoulder_score", "vol_ratio_20", "pct_change", "close"]:
@@ -359,7 +372,7 @@ def build_action_list(signals: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
         & (frame["pct_change"] <= 12.0)
     ].copy()
     buy["action"] = "BUY"
-    buy["priority_score"] = buy["knee_score"] + buy["vol_ratio_20"] * 10 - buy["pct_change"].clip(lower=0)
+    buy["priority_score_raw"] = buy["knee_score"] + buy["vol_ratio_20"] * 10 - buy["pct_change"].clip(lower=0)
 
     # Sell priority: strong shoulder + weakness confirmation
     sell = frame[
@@ -368,11 +381,20 @@ def build_action_list(signals: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
         & (frame["pct_change"] <= 0)
     ].copy()
     sell["action"] = "SELL"
-    sell["priority_score"] = sell["shoulder_score"] + (sell["vol_ratio_20"].fillna(1.0) * 5) + abs(sell["pct_change"])
+    sell["priority_score_raw"] = sell["shoulder_score"] + (sell["vol_ratio_20"].fillna(1.0) * 5) + abs(sell["pct_change"])
 
     action = pd.concat([buy, sell], ignore_index=True)
     if action.empty:
         return pd.DataFrame()
+
+    # Performance-linked calibration:
+    # 1) action-level multiplier from recent realized outcomes
+    # 2) market-regime expectancy bonus
+    action["action_multiplier"] = action["action"].map(lambda x: float(action_multiplier.get(x, 1.0)))
+    action["regime_bonus"] = action["action"].map(
+        lambda x: float(regime_expectancy.get((current_regime, x), 0.0))
+    )
+    action["priority_score"] = action["priority_score_raw"] * action["action_multiplier"] + action["regime_bonus"] * 8.0
 
     action = action.sort_values("priority_score", ascending=False).head(top_n).reset_index(drop=True)
 
@@ -407,6 +429,8 @@ def build_action_list(signals: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
             "qty",
             "est_loss",
             "est_gain",
+            "action_multiplier",
+            "regime_bonus",
         ]
     ]
 
@@ -429,6 +453,46 @@ def build_historical_recommendations(signals_all: pd.DataFrame, top_n: int = 6) 
     if not results:
         return pd.DataFrame()
     return pd.concat(results, ignore_index=True)
+
+
+def build_recommendation_calibration(merged_rec: pd.DataFrame) -> dict:
+    if merged_rec.empty:
+        return {"action_multiplier": {"BUY": 1.0, "SELL": 1.0}, "regime_expectancy": {}}
+    if "signal_date" not in merged_rec.columns:
+        return {"action_multiplier": {"BUY": 1.0, "SELL": 1.0}, "regime_expectancy": {}}
+
+    # Use recent window so recommendations adapt to regime shift.
+    recent_dates = sorted(merged_rec["signal_date"].astype(str).unique())[-20:]
+    recent = merged_rec[merged_rec["signal_date"].astype(str).isin(set(recent_dates))].copy()
+    if recent.empty:
+        return {"action_multiplier": {"BUY": 1.0, "SELL": 1.0}, "regime_expectancy": {}}
+
+    ret_col = _select_return_column(recent, 10) or _select_return_column(recent, 5)
+    if not ret_col:
+        return {"action_multiplier": {"BUY": 1.0, "SELL": 1.0}, "regime_expectancy": {}}
+
+    recent = recent[recent[ret_col].notna()].copy()
+    if recent.empty:
+        return {"action_multiplier": {"BUY": 1.0, "SELL": 1.0}, "regime_expectancy": {}}
+
+    recent["strategy_ret"] = recent[ret_col].astype(float)
+    recent.loc[recent["action"] == "SELL", "strategy_ret"] = -recent.loc[recent["action"] == "SELL", "strategy_ret"]
+
+    action_multiplier = {"BUY": 1.0, "SELL": 1.0}
+    for action_name, group in recent.groupby("action", sort=False):
+        win_rate = (group["strategy_ret"] > 0).mean() * 100
+        expectancy = group["strategy_ret"].mean()
+        # bounded multiplier to avoid unstable jumps
+        mult = 1.0 + ((win_rate - 50.0) / 200.0) + (expectancy / 20.0)
+        mult = max(0.75, min(1.25, float(mult)))
+        action_multiplier[action_name] = mult
+
+    regime_expectancy: dict[tuple[str, str], float] = {}
+    if "market_regime" in recent.columns:
+        for (regime, action_name), group in recent.groupby(["market_regime", "action"], dropna=False):
+            regime_expectancy[(str(regime), action_name)] = float(group["strategy_ret"].mean())
+
+    return {"action_multiplier": action_multiplier, "regime_expectancy": regime_expectancy}
 
 
 def _select_return_column(frame: pd.DataFrame, preferred_horizon_days: int) -> str | None:
@@ -598,9 +662,35 @@ header_cols[0].metric("Analysis Date", analysis_date)
 header_cols[1].metric("Knee Strong", int((signals_df["knee_grade"] == "Strong").sum()))
 header_cols[2].metric("Shoulder Strong", int((signals_df["shoulder_grade"] == "Strong").sum()))
 
+eval_view_for_reco = pd.DataFrame()
+if not validation_df.empty:
+    eval_view_for_reco = prepare_evaluation_frame(validation_df, analysis_date)
+
+recommendation_calibration = {"action_multiplier": {"BUY": 1.0, "SELL": 1.0}, "regime_expectancy": {}}
+current_regime = "Unknown"
+if not eval_view_for_reco.empty:
+    rec_history_for_cal = build_historical_recommendations(signals_history_df, top_n=6)
+    if not rec_history_for_cal.empty:
+        merged_for_cal = rec_history_for_cal.merge(
+            eval_view_for_reco,
+            how="left",
+            on=["signal_date", "symbol", "name"],
+            suffixes=("_rec", ""),
+        )
+        recommendation_calibration = build_recommendation_calibration(merged_for_cal)
+    if "market_regime" in eval_view_for_reco.columns:
+        known_regime = eval_view_for_reco.dropna(subset=["market_regime"]).sort_values("signal_date")
+        if not known_regime.empty:
+            current_regime = str(known_regime.iloc[-1]["market_regime"])
+
 st.subheader("오늘의 실행 리스트")
-st.caption("아래 항목은 규칙 기반으로 추린 즉시 실행 후보입니다.")
-action_df = build_action_list(signals_df, top_n=6)
+st.caption("아래 항목은 규칙 + 과거 실전 성과 보정을 반영한 즉시 실행 후보입니다.")
+action_df = build_action_list_with_calibration(
+    signals_df,
+    top_n=6,
+    calibration=recommendation_calibration,
+    current_regime=current_regime,
+)
 if action_df.empty:
     st.info("오늘은 조건을 만족한 BUY/SELL 실행 후보가 없습니다. 관망(WATCH) 권장.")
 else:
@@ -620,6 +710,8 @@ else:
             "shoulder_score": "매도점수",
             "pct_change": "전일대비등락률",
             "vol_ratio_20": "거래량비율",
+            "action_multiplier": "성과보정",
+            "regime_bonus": "국면보정",
         }
     )
     st.dataframe(
@@ -632,6 +724,8 @@ else:
                 "매도점수",
                 "전일대비등락률",
                 "거래량비율",
+                "성과보정",
+                "국면보정",
                 "진입가",
                 "손절가",
                 "목표가",
@@ -643,6 +737,11 @@ else:
         use_container_width=True,
         hide_index=True,
         height=260,
+    )
+    m_buy = recommendation_calibration.get("action_multiplier", {}).get("BUY", 1.0)
+    m_sell = recommendation_calibration.get("action_multiplier", {}).get("SELL", 1.0)
+    st.caption(
+        f"최근 성과 보정계수: BUY x{m_buy:.2f}, SELL x{m_sell:.2f} | 현재 추정 시장국면: {current_regime}"
     )
 
 knee_view = signals_df[signals_df["knee_score"] >= CANDIDATE_DISPLAY_MIN_SCORE].copy().sort_values(
