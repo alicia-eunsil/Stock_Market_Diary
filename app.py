@@ -368,6 +368,23 @@ def build_action_list(signals: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
     return build_action_list_with_calibration(signals, top_n=top_n, calibration=None, current_regime="Unknown")
 
 
+def classify_pattern(row: pd.Series, action: str) -> str:
+    pct = float(row.get("pct_change", 0.0) or 0.0)
+    vol = float(row.get("vol_ratio_20", 1.0) or 1.0)
+    knee = float(row.get("knee_score", 0.0) or 0.0)
+    reasons = str(row.get("knee_reasons", ""))
+
+    if action == "SELL":
+        return "RiskOff"
+    if "20일선 회복" in reasons and vol >= 1.3:
+        return "Rebound"
+    if pct >= 8.0 and vol >= 1.2:
+        return "Breakout"
+    if knee >= 45 and pct >= 0 and vol >= 1.0:
+        return "Continuation"
+    return "Rebound"
+
+
 def build_action_list_with_calibration(
     signals: pd.DataFrame,
     top_n: int = 5,
@@ -383,6 +400,9 @@ def build_action_list_with_calibration(
     action_multiplier = calibration.get("action_multiplier", {"BUY": 1.0, "SELL": 1.0})
     action_expectancy = calibration.get("action_expectancy", {"BUY": 0.0, "SELL": 0.0})
     regime_expectancy = calibration.get("regime_expectancy", {})
+    pattern_expectancy = calibration.get("pattern_expectancy", {})
+    pattern_count = calibration.get("pattern_count", {})
+    pattern_active = calibration.get("pattern_active", {})
 
     frame = signals.copy()
     for col in ["knee_score", "shoulder_score", "vol_ratio_20", "pct_change", "close", "intraday_quality_score"]:
@@ -441,6 +461,8 @@ def build_action_list_with_calibration(
     if action.empty:
         return pd.DataFrame()
 
+    action["pattern"] = action.apply(lambda row: classify_pattern(row, str(row["action"])), axis=1)
+
     # Performance-linked calibration:
     # 1) action-level multiplier from recent realized outcomes
     # 2) market-regime expectancy bonus
@@ -449,13 +471,32 @@ def build_action_list_with_calibration(
     action["regime_bonus"] = action["action"].map(
         lambda x: float(regime_expectancy.get((current_regime, x), 0.0))
     )
+    action["pattern_expectancy"] = action.apply(
+        lambda row: float(pattern_expectancy.get((str(row["action"]), str(row["pattern"])), 0.0)),
+        axis=1,
+    )
+    action["pattern_count"] = action.apply(
+        lambda row: int(pattern_count.get((str(row["action"]), str(row["pattern"])), 0)),
+        axis=1,
+    )
+    action["pattern_active"] = action.apply(
+        lambda row: bool(pattern_active.get((str(row["action"]), str(row["pattern"])), True)),
+        axis=1,
+    )
     action["expected_return_adj"] = action["action_expectancy"] + action["regime_bonus"]
+    action["expected_return_final"] = action["expected_return_adj"] + action["pattern_expectancy"] * 0.5
     action["priority_score"] = action["priority_score_raw"] * action["action_multiplier"] + action["regime_bonus"] * 8.0
 
     # Gate applies only when calibrated recommendation mode is active.
     # Historical recommendation reconstruction should not be blocked here.
     if has_calibration:
-        action = action[(action["action_expectancy"] > 0) & (action["expected_return_adj"] > 0)].copy()
+        action = action[
+            (action["pattern_active"])
+            & (action["pattern_count"] >= 8)
+            & (action["action_expectancy"] > 0)
+            & (action["expected_return_adj"] > 0)
+            & (action["expected_return_final"] > 0)
+        ].copy()
         if action.empty:
             return pd.DataFrame()
 
@@ -497,6 +538,10 @@ def build_action_list_with_calibration(
             "action_expectancy",
             "regime_bonus",
             "expected_return_adj",
+            "pattern",
+            "pattern_expectancy",
+            "pattern_count",
+            "expected_return_final",
         ]
     ]
 
@@ -523,26 +568,62 @@ def build_historical_recommendations(signals_all: pd.DataFrame, top_n: int = 6) 
 
 def build_recommendation_calibration(merged_rec: pd.DataFrame) -> dict:
     if merged_rec.empty:
-        return {"action_multiplier": {"BUY": 1.0, "SELL": 1.0}, "action_expectancy": {"BUY": 0.0, "SELL": 0.0}, "regime_expectancy": {}}
+        return {
+            "action_multiplier": {"BUY": 1.0, "SELL": 1.0},
+            "action_expectancy": {"BUY": 0.0, "SELL": 0.0},
+            "regime_expectancy": {},
+            "pattern_expectancy": {},
+            "pattern_count": {},
+            "pattern_active": {},
+        }
     if "signal_date" not in merged_rec.columns:
-        return {"action_multiplier": {"BUY": 1.0, "SELL": 1.0}, "action_expectancy": {"BUY": 0.0, "SELL": 0.0}, "regime_expectancy": {}}
+        return {
+            "action_multiplier": {"BUY": 1.0, "SELL": 1.0},
+            "action_expectancy": {"BUY": 0.0, "SELL": 0.0},
+            "regime_expectancy": {},
+            "pattern_expectancy": {},
+            "pattern_count": {},
+            "pattern_active": {},
+        }
 
     # Use recent window so recommendations adapt to regime shift.
     recent_dates = sorted(merged_rec["signal_date"].astype(str).unique())[-20:]
     recent = merged_rec[merged_rec["signal_date"].astype(str).isin(set(recent_dates))].copy()
     if recent.empty:
-        return {"action_multiplier": {"BUY": 1.0, "SELL": 1.0}, "action_expectancy": {"BUY": 0.0, "SELL": 0.0}, "regime_expectancy": {}}
+        return {
+            "action_multiplier": {"BUY": 1.0, "SELL": 1.0},
+            "action_expectancy": {"BUY": 0.0, "SELL": 0.0},
+            "regime_expectancy": {},
+            "pattern_expectancy": {},
+            "pattern_count": {},
+            "pattern_active": {},
+        }
 
     ret_col = _select_return_column(recent, 10) or _select_return_column(recent, 5)
     if not ret_col:
-        return {"action_multiplier": {"BUY": 1.0, "SELL": 1.0}, "action_expectancy": {"BUY": 0.0, "SELL": 0.0}, "regime_expectancy": {}}
+        return {
+            "action_multiplier": {"BUY": 1.0, "SELL": 1.0},
+            "action_expectancy": {"BUY": 0.0, "SELL": 0.0},
+            "regime_expectancy": {},
+            "pattern_expectancy": {},
+            "pattern_count": {},
+            "pattern_active": {},
+        }
 
     recent = recent[recent[ret_col].notna()].copy()
     if recent.empty:
-        return {"action_multiplier": {"BUY": 1.0, "SELL": 1.0}, "action_expectancy": {"BUY": 0.0, "SELL": 0.0}, "regime_expectancy": {}}
+        return {
+            "action_multiplier": {"BUY": 1.0, "SELL": 1.0},
+            "action_expectancy": {"BUY": 0.0, "SELL": 0.0},
+            "regime_expectancy": {},
+            "pattern_expectancy": {},
+            "pattern_count": {},
+            "pattern_active": {},
+        }
 
     recent["strategy_ret"] = recent[ret_col].astype(float)
     recent.loc[recent["action"] == "SELL", "strategy_ret"] = -recent.loc[recent["action"] == "SELL", "strategy_ret"]
+    recent["pattern"] = recent.apply(lambda row: classify_pattern(row, str(row["action"])), axis=1)
 
     action_multiplier = {"BUY": 1.0, "SELL": 1.0}
     action_expectancy = {"BUY": 0.0, "SELL": 0.0}
@@ -560,7 +641,25 @@ def build_recommendation_calibration(merged_rec: pd.DataFrame) -> dict:
         for (regime, action_name), group in recent.groupby(["market_regime", "action"], dropna=False):
             regime_expectancy[(str(regime), action_name)] = float(group["strategy_ret"].mean())
 
-    return {"action_multiplier": action_multiplier, "action_expectancy": action_expectancy, "regime_expectancy": regime_expectancy}
+    pattern_expectancy: dict[tuple[str, str], float] = {}
+    pattern_count: dict[tuple[str, str], int] = {}
+    pattern_active: dict[tuple[str, str], bool] = {}
+    for (action_name, pattern_name), group in recent.groupby(["action", "pattern"], dropna=False):
+        key = (str(action_name), str(pattern_name))
+        exp = float(group["strategy_ret"].mean())
+        cnt = int(len(group))
+        pattern_expectancy[key] = exp
+        pattern_count[key] = cnt
+        pattern_active[key] = cnt >= 8 and exp > 0
+
+    return {
+        "action_multiplier": action_multiplier,
+        "action_expectancy": action_expectancy,
+        "regime_expectancy": regime_expectancy,
+        "pattern_expectancy": pattern_expectancy,
+        "pattern_count": pattern_count,
+        "pattern_active": pattern_active,
+    }
 
 
 def _select_return_column(frame: pd.DataFrame, preferred_horizon_days: int) -> str | None:
@@ -768,7 +867,7 @@ if not eval_view_for_reco.empty:
 
 st.subheader("오늘의 실행 리스트")
 st.caption("반등형(보수)과 추세형(모멘텀)을 분리해 추천합니다. 둘 다 실전 성과 보정을 반영합니다.")
-st.caption("실행 후보는 `최근기대값 > 0` 그리고 `최종기대수익률 > 0`을 모두 만족한 종목만 표시됩니다.")
+st.caption("실행 후보는 `패턴 표본수>=8`, `패턴기대값>0`, `최근기대값>0`, `최종기대수익률>0`을 모두 만족한 종목만 표시됩니다.")
 rebound_df = build_action_list_with_calibration(
     signals_df,
     top_n=6,
@@ -797,7 +896,9 @@ def render_action_table(action_df: pd.DataFrame, empty_msg: str) -> None:
     quick_view["예상이익"] = quick_view["est_gain"].map(format_currency)
     quick_view["권장수량"] = quick_view["qty"].map(lambda v: f"{int(v):,}주")
     quick_view["최근기대값"] = quick_view["action_expectancy"].map(format_return)
+    quick_view["패턴기대값"] = quick_view["pattern_expectancy"].map(format_return)
     quick_view["최종기대수익률"] = quick_view["expected_return_adj"].map(format_return)
+    quick_view["패턴표본수"] = quick_view["pattern_count"].map(lambda v: f"{int(v)}")
     quick_view = quick_view.rename(
         columns={
             "action": "액션",
@@ -808,6 +909,7 @@ def render_action_table(action_df: pd.DataFrame, empty_msg: str) -> None:
             "pct_change": "전일대비등락률",
             "vol_ratio_20": "거래량비율",
             "intraday_quality_score": "분봉품질점수",
+            "pattern": "패턴",
             "action_multiplier": "성과보정",
             "regime_bonus": "국면보정",
         }
@@ -823,8 +925,11 @@ def render_action_table(action_df: pd.DataFrame, empty_msg: str) -> None:
                 "전일대비등락률",
                 "거래량비율",
                 "분봉품질점수",
+                "패턴",
+                "패턴표본수",
                 "성과보정",
                 "최근기대값",
+                "패턴기대값",
                 "국면보정",
                 "최종기대수익률",
                 "진입가",
@@ -851,6 +956,14 @@ m_sell = recommendation_calibration.get("action_multiplier", {}).get("SELL", 1.0
 st.caption(
     f"최근 성과 보정계수: BUY x{m_buy:.2f}, SELL x{m_sell:.2f} | 현재 추정 시장국면: {current_regime}"
 )
+pattern_active_map = recommendation_calibration.get("pattern_active", {})
+if pattern_active_map:
+    active_labels = [f"{a}:{p}" for (a, p), is_on in pattern_active_map.items() if is_on]
+    inactive_labels = [f"{a}:{p}" for (a, p), is_on in pattern_active_map.items() if not is_on]
+    if active_labels:
+        st.caption(f"활성 패턴: {', '.join(active_labels)}")
+    if inactive_labels:
+        st.caption(f"비활성 패턴: {', '.join(inactive_labels)}")
 
 knee_view = signals_df[signals_df["knee_score"] >= CANDIDATE_DISPLAY_MIN_SCORE].copy().sort_values(
     ["knee_score", "pct_change"], ascending=[False, False]
