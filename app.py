@@ -228,6 +228,23 @@ def format_currency(value: float | int | None) -> str:
     return f"{int(value):,}원"
 
 
+def styled_return_html(value: float | int | None) -> str:
+    if pd.isna(value):
+        return "<span style='color:#6b7280;'>-</span>"
+    v = float(value)
+    color = "#059669" if v > 0 else ("#dc2626" if v < 0 else "#6b7280")
+    sign = "+" if v > 0 else ""
+    return f"<span style='color:{color}; font-weight:700;'>{sign}{v:.2f}%</span>"
+
+
+def styled_rate_html(value: float | int | None) -> str:
+    if pd.isna(value):
+        return "<span style='color:#6b7280;'>-</span>"
+    v = float(value)
+    color = "#059669" if v >= 50 else "#dc2626"
+    return f"<span style='color:{color}; font-weight:700;'>{v:.1f}%</span>"
+
+
 def prepare_evaluation_frame(validation: pd.DataFrame, analysis_date: str) -> pd.DataFrame:
     frame = validation[validation["signal_date"].astype(str) < analysis_date].copy()
     if frame.empty:
@@ -438,7 +455,7 @@ def build_action_list_with_calibration(
     # Gate applies only when calibrated recommendation mode is active.
     # Historical recommendation reconstruction should not be blocked here.
     if has_calibration:
-        action = action[action["expected_return_adj"] > 0].copy()
+        action = action[(action["action_expectancy"] > 0) & (action["expected_return_adj"] > 0)].copy()
         if action.empty:
             return pd.DataFrame()
 
@@ -751,6 +768,7 @@ if not eval_view_for_reco.empty:
 
 st.subheader("오늘의 실행 리스트")
 st.caption("반등형(보수)과 추세형(모멘텀)을 분리해 추천합니다. 둘 다 실전 성과 보정을 반영합니다.")
+st.caption("실행 후보는 `최근기대값 > 0` 그리고 `최종기대수익률 > 0`을 모두 만족한 종목만 표시됩니다.")
 rebound_df = build_action_list_with_calibration(
     signals_df,
     top_n=6,
@@ -961,6 +979,23 @@ if not validation_df.empty:
                     if summary.empty:
                         st.info("해당 기간은 아직 평가 완료된 추천 결과가 부족합니다.")
                     else:
+                        total_row = summary[summary["구분"] == "TOTAL"]
+                        if not total_row.empty:
+                            total = total_row.iloc[0]
+                            status_ok = (float(total["평균수익률"]) > 0) and (float(total["승률"]) >= 50.0)
+                            status_label = "전략 통과" if status_ok else "전략 주의"
+                            status_bg = "#dcfce7" if status_ok else "#fee2e2"
+                            status_color = "#166534" if status_ok else "#991b1b"
+                            c1, c2, c3, c4 = st.columns(4)
+                            c1.metric("TOTAL 평가건수", f"{int(total['평가건수'])}건")
+                            c2.markdown(f"평균수익률: {styled_return_html(total['평균수익률'])}", unsafe_allow_html=True)
+                            c3.markdown(f"승률: {styled_rate_html(total['승률'])}", unsafe_allow_html=True)
+                            c4.markdown(f"총합수익률: {styled_return_html(total['총합수익률'])}", unsafe_allow_html=True)
+                            st.markdown(
+                                f"""<div style="display:inline-block; padding:6px 10px; border-radius:8px; background:{status_bg}; color:{status_color}; font-weight:700; margin:4px 0 10px 0;">{status_label}</div>""",
+                                unsafe_allow_html=True,
+                            )
+
                         summary_view = summary.copy()
                         for col in ["평균수익률", "중앙값", "총합수익률"]:
                             summary_view[col] = summary_view[col].map(format_return)
