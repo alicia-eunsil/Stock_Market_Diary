@@ -8,16 +8,19 @@ from pathlib import Path
 import pandas as pd
 
 from src.knee_shoulder.config import load_config, load_secrets
-from src.knee_shoulder.kis_client import KisAuth, fetch_daily_history, issue_access_token, throttle
+from src.knee_shoulder.kis_client import KisAuth, fetch_daily_history, fetch_intraday_history, issue_access_token, throttle
 from src.knee_shoulder.master import build_stock_master_from_excel, load_stock_master
 from src.knee_shoulder.signals import SignalThresholds, score_symbol
 from src.knee_shoulder.storage import (
     ensure_directories,
     get_latest_history_date,
     load_all_signal_files,
+    load_intraday_feature_history,
     merge_and_save_history,
+    merge_and_save_intraday,
     save_daily_patch,
     save_daily_signals,
+    save_intraday_feature_history,
     save_validation_history,
 )
 from src.knee_shoulder.validation import build_validation_rows
@@ -54,6 +57,42 @@ def resolve_fetch_start_date(raw_path: Path, runtime: dict, end_date_dt: datetim
     return start_dt.strftime("%Y%m%d")
 
 
+def _compute_intraday_quality(frame: pd.DataFrame) -> dict:
+    if frame.empty:
+        return {"intraday_quality_score": 0.0, "intraday_close_pos": 0.0, "intraday_trend_pct": 0.0, "intraday_vol_skew": 0.0}
+
+    bars = frame.copy().sort_values(["date", "time"]).reset_index(drop=True)
+    close = pd.to_numeric(bars["close"], errors="coerce")
+    volume = pd.to_numeric(bars["volume"], errors="coerce").fillna(0)
+    if close.empty or close.isna().all():
+        return {"intraday_quality_score": 0.0, "intraday_close_pos": 0.0, "intraday_trend_pct": 0.0, "intraday_vol_skew": 0.0}
+
+    day_high = close.max()
+    day_low = close.min()
+    day_open = close.iloc[0]
+    day_close = close.iloc[-1]
+    close_pos = 0.5 if day_high == day_low else float((day_close - day_low) / (day_high - day_low))
+    trend_pct = 0.0 if day_open == 0 else float(((day_close / day_open) - 1.0) * 100.0)
+
+    split_idx = max(1, len(bars) // 2)
+    vol_1 = volume.iloc[:split_idx].sum()
+    vol_2 = volume.iloc[split_idx:].sum()
+    vol_skew = 0.0 if vol_1 == 0 else float((vol_2 / vol_1) - 1.0)
+
+    # 0~100 quality score
+    score = 50.0
+    score += (close_pos - 0.5) * 50.0
+    score += max(-5.0, min(5.0, trend_pct)) * 4.0
+    score += max(-1.0, min(1.0, vol_skew)) * 10.0
+    score = max(0.0, min(100.0, score))
+    return {
+        "intraday_quality_score": round(score, 2),
+        "intraday_close_pos": round(close_pos * 100.0, 2),
+        "intraday_trend_pct": round(trend_pct, 2),
+        "intraday_vol_skew": round(vol_skew, 2),
+    }
+
+
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
@@ -69,6 +108,8 @@ def main() -> None:
             paths["signal_dir"],
             str(Path(paths["validation_file"]).parent),
             paths["log_dir"],
+            paths.get("intraday_dir", "data/intraday"),
+            str(Path(paths.get("intraday_feature_file", "data/intraday/intraday_features.csv")).parent),
         ]
     )
     setup_logging(paths["log_dir"])
@@ -158,6 +199,36 @@ def main() -> None:
     signals_df["analysis_date"] = end_date
     signals_df["run_at"] = run_at_dt.isoformat(timespec="seconds")
     save_daily_signals(Path(paths["signal_dir"]) / f"{latest_date}_signals.csv", signals_df)
+
+    # Intraday enrich: collect minute bars for top candidates and persist quality features.
+    intraday_rows = []
+    intraday_dir = Path(paths.get("intraday_dir", "data/intraday"))
+    intraday_feature_path = Path(paths.get("intraday_feature_file", "data/intraday/intraday_features.csv"))
+    top_buy = signals_df.sort_values("knee_score", ascending=False).head(20)
+    top_sell = signals_df.sort_values("shoulder_score", ascending=False).head(20)
+    candidate_symbols = sorted(set(top_buy["symbol"].astype(str).tolist() + top_sell["symbol"].astype(str).tolist()))
+    for symbol in candidate_symbols:
+        try:
+            intraday = fetch_intraday_history(auth, access_token, symbol, latest_date)
+            throttle(runtime["request_sleep_sec"])
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("Intraday fetch failed for %s: %s", symbol, exc)
+            continue
+        if intraday.empty:
+            continue
+        merge_and_save_intraday(intraday_dir / f"{symbol}.csv", intraday)
+        feature = _compute_intraday_quality(intraday)
+        signal_row = signals_df[signals_df["symbol"].astype(str) == str(symbol)]
+        name = signal_row.iloc[0]["name"] if not signal_row.empty else ""
+        intraday_rows.append({"date": latest_date, "symbol": str(symbol), "name": str(name), **feature})
+
+    if intraday_rows:
+        feature_new = pd.DataFrame(intraday_rows)
+        feature_old = load_intraday_feature_history(intraday_feature_path)
+        feature_all = pd.concat([feature_old, feature_new], ignore_index=True)
+        feature_all = feature_all.drop_duplicates(subset=["date", "symbol"]).sort_values(["date", "symbol"]).reset_index(drop=True)
+        save_intraday_feature_history(intraday_feature_path, feature_all)
+        logging.info("Saved intraday features: %s", len(feature_new))
 
     all_signals_df = load_all_signal_files(paths["signal_dir"])
     benchmark_symbol = validation_config.get("benchmark_symbol", "005930")

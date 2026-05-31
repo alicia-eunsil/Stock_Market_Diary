@@ -63,3 +63,29 @@ def load_all_signal_files(signal_dir: str) -> pd.DataFrame:
     frames = [pd.read_csv(file, dtype={"symbol": str, "date": str}) for file in files]
     combined = pd.concat(frames, ignore_index=True)
     return combined.drop_duplicates(subset=["date", "symbol"]).sort_values(["date", "symbol"]).reset_index(drop=True)
+
+
+def load_intraday_history(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame(columns=["date", "time", "open", "high", "low", "close", "volume", "turnover"])
+    return pd.read_csv(path, dtype={"date": str, "time": str})
+
+
+def merge_and_save_intraday(path: Path, incoming: pd.DataFrame) -> pd.DataFrame:
+    current = load_intraday_history(path)
+    combined = pd.concat([current, incoming], ignore_index=True)
+    combined = combined.drop_duplicates(subset=["date", "time"]).sort_values(["date", "time"]).reset_index(drop=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    combined.to_csv(path, index=False, encoding="utf-8-sig")
+    return combined
+
+
+def load_intraday_feature_history(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_csv(path, dtype={"date": str, "symbol": str})
+
+
+def save_intraday_feature_history(path: Path, frame: pd.DataFrame) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_csv(path, index=False, encoding="utf-8-sig")

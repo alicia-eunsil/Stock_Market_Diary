@@ -7,6 +7,8 @@
     "raw_dir": "data/raw",
     "patch_dir": "data/patches",
     "signal_dir": "data/signals",
+    "intraday_dir": "data/intraday",
+    "intraday_feature_file": "data/intraday/intraday_features.csv",
     "validation_file": "data/validation/signal_validation.csv",
     "log_dir": "logs"
   },

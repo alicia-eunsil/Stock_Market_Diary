@@ -8,7 +8,12 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from src.knee_shoulder.config import load_config
-from src.knee_shoulder.storage import load_all_signal_files, load_existing_history, load_validation_history
+from src.knee_shoulder.storage import (
+    load_all_signal_files,
+    load_existing_history,
+    load_intraday_feature_history,
+    load_validation_history,
+)
 
 
 st.set_page_config(page_title="Knee Shoulder Monitor", page_icon="🌻", layout="wide")
@@ -351,38 +356,69 @@ def build_action_list_with_calibration(
     top_n: int = 5,
     calibration: dict | None = None,
     current_regime: str = "Unknown",
+    strategy_profile: str = "rebound",
 ) -> pd.DataFrame:
     if signals.empty:
         return pd.DataFrame()
 
+    has_calibration = calibration is not None
     calibration = calibration or {}
     action_multiplier = calibration.get("action_multiplier", {"BUY": 1.0, "SELL": 1.0})
     action_expectancy = calibration.get("action_expectancy", {"BUY": 0.0, "SELL": 0.0})
     regime_expectancy = calibration.get("regime_expectancy", {})
 
     frame = signals.copy()
-    for col in ["knee_score", "shoulder_score", "vol_ratio_20", "pct_change", "close"]:
+    for col in ["knee_score", "shoulder_score", "vol_ratio_20", "pct_change", "close", "intraday_quality_score"]:
         if col in frame.columns:
             frame[col] = pd.to_numeric(frame[col], errors="coerce")
+    if "intraday_quality_score" not in frame.columns:
+        frame["intraday_quality_score"] = 50.0
+    frame["intraday_quality_score"] = frame["intraday_quality_score"].fillna(50.0)
 
-    # Buy priority: strong knee + meaningful volume expansion + not overly extended day spike
-    buy = frame[
-        (frame["knee_score"] >= CANDIDATE_DISPLAY_MIN_SCORE)
-        & (frame["knee_score"] > frame["shoulder_score"])
-        & (frame["vol_ratio_20"] >= 1.2)
-        & (frame["pct_change"] <= 12.0)
-    ].copy()
+    if strategy_profile == "trend":
+        # Trend profile: allow strong momentum names and relax knee threshold.
+        buy = frame[
+            (frame["knee_score"] >= 45)
+            & (frame["knee_score"] > frame["shoulder_score"])
+            & (frame["vol_ratio_20"] >= 1.0)
+            & (frame["pct_change"] >= 0)
+        ].copy()
+    else:
+        # Rebound profile: conservative pullback/reversal entry.
+        buy = frame[
+            (frame["knee_score"] >= CANDIDATE_DISPLAY_MIN_SCORE)
+            & (frame["knee_score"] > frame["shoulder_score"])
+            & (frame["vol_ratio_20"] >= 1.2)
+            & (frame["pct_change"] <= 12.0)
+        ].copy()
     buy["action"] = "BUY"
-    buy["priority_score_raw"] = buy["knee_score"] + buy["vol_ratio_20"] * 10 - buy["pct_change"].clip(lower=0)
+    if strategy_profile == "trend":
+        buy["priority_score_raw"] = (
+            buy["knee_score"] + buy["vol_ratio_20"] * 12 + buy["pct_change"].clip(lower=0) * 0.8 + buy["intraday_quality_score"] * 0.20
+        )
+    else:
+        buy["priority_score_raw"] = (
+            buy["knee_score"] + buy["vol_ratio_20"] * 10 - buy["pct_change"].clip(lower=0) + buy["intraday_quality_score"] * 0.10
+        )
 
-    # Sell priority: strong shoulder + weakness confirmation
-    sell = frame[
-        (frame["shoulder_score"] >= CANDIDATE_DISPLAY_MIN_SCORE)
-        & (frame["shoulder_score"] > frame["knee_score"])
-        & (frame["pct_change"] <= 0)
-    ].copy()
+    if strategy_profile == "trend":
+        # Trend profile sell: allow earlier weakness detection.
+        sell = frame[
+            (frame["shoulder_score"] >= 55)
+            & (frame["shoulder_score"] > frame["knee_score"])
+            & (frame["pct_change"] <= 0)
+        ].copy()
+    else:
+        # Rebound profile sell: stricter risk-off signal.
+        sell = frame[
+            (frame["shoulder_score"] >= CANDIDATE_DISPLAY_MIN_SCORE)
+            & (frame["shoulder_score"] > frame["knee_score"])
+            & (frame["pct_change"] <= 0)
+        ].copy()
     sell["action"] = "SELL"
-    sell["priority_score_raw"] = sell["shoulder_score"] + (sell["vol_ratio_20"].fillna(1.0) * 5) + abs(sell["pct_change"])
+    sell["priority_score_raw"] = (
+        sell["shoulder_score"] + (sell["vol_ratio_20"].fillna(1.0) * 5) + abs(sell["pct_change"]) + (100 - sell["intraday_quality_score"]) * 0.15
+    )
 
     action = pd.concat([buy, sell], ignore_index=True)
     if action.empty:
@@ -399,10 +435,12 @@ def build_action_list_with_calibration(
     action["expected_return_adj"] = action["action_expectancy"] + action["regime_bonus"]
     action["priority_score"] = action["priority_score_raw"] * action["action_multiplier"] + action["regime_bonus"] * 8.0
 
-    # Gate: do not recommend actions with non-positive adjusted expectancy.
-    action = action[action["expected_return_adj"] > 0].copy()
-    if action.empty:
-        return pd.DataFrame()
+    # Gate applies only when calibrated recommendation mode is active.
+    # Historical recommendation reconstruction should not be blocked here.
+    if has_calibration:
+        action = action[action["expected_return_adj"] > 0].copy()
+        if action.empty:
+            return pd.DataFrame()
 
     action = action.sort_values("priority_score", ascending=False).head(top_n).reset_index(drop=True)
 
@@ -431,6 +469,7 @@ def build_action_list_with_calibration(
             "shoulder_score",
             "pct_change",
             "vol_ratio_20",
+            "intraday_quality_score",
             "entry",
             "stop",
             "target",
@@ -663,6 +702,8 @@ def format_recent_evaluation(frame: pd.DataFrame, side: str) -> pd.DataFrame:
 signals_df, signal_date = load_latest_signals(paths["signal_dir"])
 validation_df = load_validation_history(Path(paths["validation_file"]))
 signals_history_df = load_all_signal_files(paths["signal_dir"])
+intraday_feature_path = Path(paths.get("intraday_feature_file", "data/intraday/intraday_features.csv"))
+intraday_features_df = load_intraday_feature_history(intraday_feature_path)
 
 if signals_df.empty:
     st.warning("No signal file found yet. Run `python3 run_daily.py` first.")
@@ -673,6 +714,19 @@ analysis_date = signal_date or "-"
 header_cols[0].metric("Analysis Date", analysis_date)
 header_cols[1].metric("Knee Strong", int((signals_df["knee_grade"] == "Strong").sum()))
 header_cols[2].metric("Shoulder Strong", int((signals_df["shoulder_grade"] == "Strong").sum()))
+
+if not intraday_features_df.empty and signal_date:
+    day_features = intraday_features_df[intraday_features_df["date"].astype(str) == str(signal_date)].copy()
+    if not day_features.empty:
+        signals_df = signals_df.merge(
+            day_features[["symbol", "intraday_quality_score", "intraday_close_pos", "intraday_trend_pct", "intraday_vol_skew"]],
+            how="left",
+            on="symbol",
+        )
+    else:
+        signals_df["intraday_quality_score"] = 50.0
+else:
+    signals_df["intraday_quality_score"] = 50.0
 
 eval_view_for_reco = pd.DataFrame()
 if not validation_df.empty:
@@ -696,16 +750,27 @@ if not eval_view_for_reco.empty:
             current_regime = str(known_regime.iloc[-1]["market_regime"])
 
 st.subheader("오늘의 실행 리스트")
-st.caption("아래 항목은 규칙 + 과거 실전 성과 보정을 반영한 즉시 실행 후보입니다.")
-action_df = build_action_list_with_calibration(
+st.caption("반등형(보수)과 추세형(모멘텀)을 분리해 추천합니다. 둘 다 실전 성과 보정을 반영합니다.")
+rebound_df = build_action_list_with_calibration(
     signals_df,
     top_n=6,
     calibration=recommendation_calibration,
     current_regime=current_regime,
+    strategy_profile="rebound",
 )
-if action_df.empty:
-    st.info("오늘은 조건을 만족한 BUY/SELL 실행 후보가 없습니다. 관망(WATCH) 권장.")
-else:
+trend_df = build_action_list_with_calibration(
+    signals_df,
+    top_n=6,
+    calibration=recommendation_calibration,
+    current_regime=current_regime,
+    strategy_profile="trend",
+)
+
+def render_action_table(action_df: pd.DataFrame, empty_msg: str) -> None:
+    if action_df.empty:
+        st.info(empty_msg)
+        return
+
     quick_view = action_df.copy()
     quick_view["진입가"] = quick_view["entry"].map(format_currency)
     quick_view["손절가"] = quick_view["stop"].map(format_currency)
@@ -724,6 +789,7 @@ else:
             "shoulder_score": "매도점수",
             "pct_change": "전일대비등락률",
             "vol_ratio_20": "거래량비율",
+            "intraday_quality_score": "분봉품질점수",
             "action_multiplier": "성과보정",
             "regime_bonus": "국면보정",
         }
@@ -738,6 +804,7 @@ else:
                 "매도점수",
                 "전일대비등락률",
                 "거래량비율",
+                "분봉품질점수",
                 "성과보정",
                 "최근기대값",
                 "국면보정",
@@ -754,11 +821,18 @@ else:
         hide_index=True,
         height=260,
     )
-    m_buy = recommendation_calibration.get("action_multiplier", {}).get("BUY", 1.0)
-    m_sell = recommendation_calibration.get("action_multiplier", {}).get("SELL", 1.0)
-    st.caption(
-        f"최근 성과 보정계수: BUY x{m_buy:.2f}, SELL x{m_sell:.2f} | 현재 추정 시장국면: {current_regime}"
-    )
+
+tab_rebound, tab_trend = st.tabs(["반등형 추천", "추세형 추천"])
+with tab_rebound:
+    render_action_table(rebound_df, "반등형 조건을 만족한 BUY/SELL 실행 후보가 없습니다.")
+with tab_trend:
+    render_action_table(trend_df, "추세형 조건을 만족한 BUY/SELL 실행 후보가 없습니다.")
+
+m_buy = recommendation_calibration.get("action_multiplier", {}).get("BUY", 1.0)
+m_sell = recommendation_calibration.get("action_multiplier", {}).get("SELL", 1.0)
+st.caption(
+    f"최근 성과 보정계수: BUY x{m_buy:.2f}, SELL x{m_sell:.2f} | 현재 추정 시장국면: {current_regime}"
+)
 
 knee_view = signals_df[signals_df["knee_score"] >= CANDIDATE_DISPLAY_MIN_SCORE].copy().sort_values(
     ["knee_score", "pct_change"], ascending=[False, False]
