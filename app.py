@@ -489,6 +489,49 @@ def summarize_recommendation_performance(frame: pd.DataFrame, horizon_days: int,
     return summary
 
 
+def build_recommendation_detail(frame: pd.DataFrame, horizon_days: int, lookback_dates: int) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame()
+    ret_col = _select_return_column(frame, horizon_days)
+    if not ret_col:
+        return pd.DataFrame()
+
+    dates = sorted(frame["signal_date"].astype(str).unique())
+    target_dates = set(dates[-lookback_dates:])
+    scope = frame[frame["signal_date"].astype(str).isin(target_dates)].copy()
+    scope = scope[scope[ret_col].notna()].copy()
+    if scope.empty:
+        return pd.DataFrame()
+
+    scope["수익률"] = scope[ret_col].astype(float)
+    scope["전략수익률"] = scope["수익률"]
+    scope.loc[scope["action"] == "SELL", "전략수익률"] = -scope.loc[scope["action"] == "SELL", "수익률"]
+
+    view = scope[
+        [
+            "signal_date",
+            "action",
+            "symbol",
+            "name",
+            "knee_score",
+            "shoulder_score",
+            "수익률",
+            "전략수익률",
+        ]
+    ].copy()
+    view = view.rename(
+        columns={
+            "signal_date": "추천일",
+            "action": "액션",
+            "symbol": "종목코드",
+            "name": "종목명",
+            "knee_score": "매수점수",
+            "shoulder_score": "매도점수",
+        }
+    )
+    return view.sort_values(["추천일", "전략수익률"], ascending=[False, False]).reset_index(drop=True)
+
+
 def summarize_side(frame: pd.DataFrame, score_column: str, success_column: str, direction: str) -> dict:
     candidates = frame[(frame[score_column] >= CANDIDATE_DISPLAY_MIN_SCORE) & frame["ret_5d"].notna()].copy()
     if candidates.empty:
@@ -734,6 +777,18 @@ if not validation_df.empty:
                             summary_view[col] = summary_view[col].map(format_return)
                         summary_view["승률"] = summary_view["승률"].map(format_rate)
                         st.dataframe(summary_view, use_container_width=True, hide_index=True)
+                        detail = build_recommendation_detail(merged_rec, horizon_days, lookback_dates)
+                        if not detail.empty:
+                            detail_view = detail.copy()
+                            detail_view["수익률"] = detail_view["수익률"].map(format_return)
+                            detail_view["전략수익률"] = detail_view["전략수익률"].map(format_return)
+                            st.markdown("`종목별 상세`")
+                            st.dataframe(
+                                detail_view,
+                                use_container_width=True,
+                                hide_index=True,
+                                height=280,
+                            )
 
         completed_view = eval_view[eval_view["ret_5d"].notna()].copy()
         if completed_view.empty:
