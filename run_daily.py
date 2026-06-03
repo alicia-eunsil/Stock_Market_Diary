@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.knee_shoulder.config import load_config, load_secrets
-from src.knee_shoulder.export_data import ExportApiAuth, fetch_export_trend_history
+from src.knee_shoulder.export_data import ExportApiAuth, clamp_export_month_range, fetch_export_trend_history
 from src.knee_shoulder.kis_client import KisAuth, fetch_daily_history, fetch_intraday_history, issue_access_token, throttle
 from src.knee_shoulder.master import build_stock_master_from_excel, load_stock_master
 from src.knee_shoulder.signals import SignalThresholds, score_symbol
@@ -265,10 +265,14 @@ def main() -> None:
                 base_url=export_cfg.get("base_url", "https://apis.data.go.kr/1220000/prlstMmUtPrviExpAcrs"),
                 endpoint=export_cfg.get("endpoint", "getPrlstMmUtPrviExpAcrs"),
             )
+            start_month, end_month = clamp_export_month_range(
+                str(export_cfg.get("start_month", "201601")),
+                latest_date[:6],
+            )
             export_df = fetch_export_trend_history(
                 export_auth,
-                start_month=str(export_cfg.get("start_month", "201601")),
-                end_month=latest_date[:6],
+                start_month=start_month,
+                end_month=end_month,
                 num_rows=int(export_cfg.get("num_rows", 1000)),
             )
             if not export_df.empty:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from datetime import datetime
 
 import pandas as pd
 import requests
@@ -34,6 +35,16 @@ _TARGET_ALIASES: dict[str, list[str]] = {
 
 def _normalize_key(key: str) -> str:
     return re.sub(r"[^0-9A-Za-z가-힣]", "", key).lower()
+
+
+def clamp_export_month_range(start_month: str, end_month: str, max_years: int = 10) -> tuple[str, str]:
+    start = datetime.strptime(str(start_month), "%Y%m")
+    end = datetime.strptime(str(end_month), "%Y%m")
+    min_start_year = end.year - max_years
+    min_start = datetime(min_start_year, end.month, 1)
+    if start < min_start:
+        start = min_start
+    return start.strftime("%Y%m"), end.strftime("%Y%m")
 
 
 def _to_int(value: str | None) -> int:
@@ -118,6 +129,7 @@ def fetch_export_trend_history(
     num_rows: int = 1000,
 ) -> pd.DataFrame:
     url = f"{auth.base_url.rstrip('/')}/{auth.endpoint.lstrip('/')}"
+    start_month, end_month = clamp_export_month_range(start_month, end_month)
     params = {
         "serviceKey": auth.service_key,
         "pageNo": page_no,
