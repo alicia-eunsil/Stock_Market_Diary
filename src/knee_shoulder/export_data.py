@@ -114,6 +114,21 @@ def _parse_xml_items(xml_text: str) -> list[dict[str, str]]:
 
 
 def _normalize_rows(rows: list[dict[str, str]]) -> pd.DataFrame:
+    columns = [
+        "월별",
+        "기간",
+        "전체",
+        "반도체",
+        "철강제품",
+        "승용차",
+        "석유제품",
+        "무선통신기기",
+        "선박",
+        "자동차부품",
+        "컴퓨터주변기기",
+        "정밀기기",
+        "가전제품",
+    ]
     records: list[dict[str, object]] = []
     for row in rows:
         normalized = {
@@ -140,7 +155,7 @@ def _normalize_rows(rows: list[dict[str, str]]) -> pd.DataFrame:
         }
         records.append(record)
 
-    frame = pd.DataFrame.from_records(records)
+    frame = pd.DataFrame.from_records(records, columns=columns)
     if frame.empty:
         return frame
     frame = frame.drop_duplicates(subset=["월별", "기간"], keep="last").sort_values(["월별", "기간"]).reset_index(drop=True)
