@@ -8,15 +8,24 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from src.knee_shoulder.config import load_config
-from src.knee_shoulder.export_data import ExportApiAuth, fetch_export_trend_history
+try:
+    from src.knee_shoulder.export_data import ExportApiAuth, fetch_export_trend_history
+except ImportError:  # pragma: no cover - fail soft on partial deployments
+    ExportApiAuth = None
+    fetch_export_trend_history = None
+
 from src.knee_shoulder.storage import (
     load_all_signal_files,
-    load_export_trend_history,
     load_existing_history,
     load_intraday_feature_history,
     load_validation_history,
-    save_export_trend_history,
 )
+
+try:
+    from src.knee_shoulder.storage import load_export_trend_history, save_export_trend_history
+except ImportError:  # pragma: no cover - fail soft on partial deployments
+    load_export_trend_history = None
+    save_export_trend_history = None
 
 
 st.set_page_config(page_title="Knee Shoulder Monitor", page_icon="🌻", layout="wide")
@@ -214,6 +223,9 @@ def format_validation_view(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_or_refresh_export_history(force_refresh: bool = False) -> pd.DataFrame:
+    if load_export_trend_history is None or save_export_trend_history is None or ExportApiAuth is None or fetch_export_trend_history is None:
+        return pd.DataFrame()
+
     frame = load_export_trend_history(EXPORT_TREND_PATH)
     if not frame.empty and not force_refresh:
         return frame
