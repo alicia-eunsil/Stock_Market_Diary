@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.knee_shoulder.config import load_config, load_secrets
+from src.knee_shoulder.export_data import ExportApiAuth, fetch_export_trend_history
 from src.knee_shoulder.kis_client import KisAuth, fetch_daily_history, fetch_intraday_history, issue_access_token, throttle
 from src.knee_shoulder.master import build_stock_master_from_excel, load_stock_master
 from src.knee_shoulder.signals import SignalThresholds, score_symbol
@@ -15,9 +16,11 @@ from src.knee_shoulder.storage import (
     ensure_directories,
     get_latest_history_date,
     load_all_signal_files,
+    load_export_trend_history,
     load_intraday_feature_history,
     merge_and_save_history,
     merge_and_save_intraday,
+    save_export_trend_history,
     save_daily_patch,
     save_daily_signals,
     save_intraday_feature_history,
@@ -119,6 +122,7 @@ def main() -> None:
             paths["log_dir"],
             paths.get("intraday_dir", "data/intraday"),
             str(Path(paths.get("intraday_feature_file", "data/intraday/intraday_features.csv")).parent),
+            str(Path(paths.get("export_trend_file", "data/external/export_trends.csv")).parent),
         ]
     )
     setup_logging(paths["log_dir"])
@@ -250,6 +254,35 @@ def main() -> None:
     validation_path = Path(paths["validation_file"])
     validation_all = new_validation.drop_duplicates(subset=["signal_date", "symbol"]).sort_values(["signal_date", "symbol"])
     save_validation_history(validation_path, validation_all)
+
+    export_cfg = config.get("export_data", {})
+    export_trend_path = Path(paths.get("export_trend_file", "data/external/export_trends.csv"))
+    data_go_service_key = secrets.get("data_go_service_key")
+    if data_go_service_key:
+        try:
+            export_auth = ExportApiAuth(
+                service_key=data_go_service_key,
+                base_url=export_cfg.get("base_url", "https://apis.data.go.kr/1220000/prlstMmUtPrviExpAcrs"),
+                endpoint=export_cfg.get("endpoint", "getPrlstMmUtPrviExpAcrs"),
+            )
+            export_df = fetch_export_trend_history(
+                export_auth,
+                start_month=str(export_cfg.get("start_month", "201601")),
+                end_month=latest_date[:6],
+                num_rows=int(export_cfg.get("num_rows", 1000)),
+            )
+            if not export_df.empty:
+                current_export = load_export_trend_history(export_trend_path)
+                combined_export = pd.concat([current_export, export_df], ignore_index=True)
+                combined_export = combined_export.drop_duplicates(subset=["월별", "기간"], keep="last").sort_values(["월별", "기간"]).reset_index(drop=True)
+                save_export_trend_history(export_trend_path, combined_export)
+                logging.info("Saved export trend rows: %s", len(export_df))
+            else:
+                logging.warning("Export trend API returned no rows.")
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("Export trend fetch failed: %s", exc)
+    else:
+        logging.warning("data_go_service_key missing; export trend data was not refreshed.")
 
     logging.info("Saved patch rows: %s", len(patch_df))
     logging.info("Saved signals: %s", len(signals_df))

@@ -9,6 +9,7 @@
     "signal_dir": "data/signals",
     "intraday_dir": "data/intraday",
     "intraday_feature_file": "data/intraday/intraday_features.csv",
+    "export_trend_file": "data/external/export_trends.csv",
     "validation_file": "data/validation/signal_validation.csv",
     "log_dir": "logs"
   },
@@ -40,5 +41,11 @@
     "max_mdd_stop_pct": -8.0,
     "oos_test_days": 20,
     "oos_train_days": 60
+  },
+  "export_data": {
+    "base_url": "https://apis.data.go.kr/1220000/prlstMmUtPrviExpAcrs",
+    "endpoint": "getPrlstMmUtPrviExpAcrs",
+    "start_month": "201601",
+    "num_rows": 1000
   }
 }

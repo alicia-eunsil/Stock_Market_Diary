@@ -8,11 +8,14 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from src.knee_shoulder.config import load_config
+from src.knee_shoulder.export_data import ExportApiAuth, fetch_export_trend_history
 from src.knee_shoulder.storage import (
     load_all_signal_files,
+    load_export_trend_history,
     load_existing_history,
     load_intraday_feature_history,
     load_validation_history,
+    save_export_trend_history,
 )
 
 
@@ -51,6 +54,7 @@ CANDIDATE_DISPLAY_MIN_SCORE = config["runtime"]["signal_threshold"]
 CANDIDATE_TABLE_HEIGHT = 245
 validation_cfg = config.get("validation", {})
 risk_cfg = config.get("risk_control", {})
+export_cfg = config.get("export_data", {})
 RISK_PER_TRADE_PCT = float(validation_cfg.get("risk_per_trade_pct", 1.0))
 STOP_LOSS_PCT = float(validation_cfg.get("stop_loss_pct", 3.0))
 TARGET_PROFIT_PCT = float(validation_cfg.get("target_profit_pct", 6.0))
@@ -70,6 +74,7 @@ LEADER_SYMBOLS = {
     "035420",  # NAVER
     "035720",  # 카카오
 }
+EXPORT_TREND_PATH = Path(paths.get("export_trend_file", "data/external/export_trends.csv"))
 
 
 def render_candidate_help(title: str, score_label: str, reasons_label: str) -> None:
@@ -110,17 +115,14 @@ def render_candidate_help(title: str, score_label: str, reasons_label: str) -> N
 
 def render_validation_help() -> None:
     with st.popover("!"):
-        st.markdown("**예측평가 읽는 법**")
-        st.markdown("- 이 표는 오늘 후보가 아니라, **직전 거래일에 포착된 후보가 오늘 기준으로 어떻게 됐는지** 보는 영역입니다.")
-        st.markdown("- `결정일` > 해당 종목이 매수/매도 후보로 결정된 날짜입니다.")
-        st.markdown("- `매수점수` > 무릎 후보 점수입니다. 높을수록 매수 후보 근거가 많이 겹친 상태입니다.")
-        st.markdown("- `매도점수` > 어깨 후보 점수입니다. 높을수록 매도 후보 근거가 많이 겹친 상태입니다.")
-        st.markdown("- `수익률(1일)`, `수익률(3일)`, `수익률(5일)`, `수익률(10일)` > 결정일 이후 각각 1일, 3일, 5일, 10일 뒤 수익률입니다.")
-        st.markdown("- 예를 들어 3월 9일에 결정된 종목이면, `수익률(1일)`은 3월 10일 데이터가 쌓일 때 채워집니다.")
-        st.markdown("- `수익률(3일)`, `수익률(5일)`, `수익률(10일)`도 각각 해당 일수가 지난 뒤 배치가 다시 돌면 채워집니다.")
-        st.markdown("- `매수 성공여부` > 5일 안에 `+3%` 이상 상승했는지 뜻합니다.")
-        st.markdown("- `매도 성공여부` > 5일 안에 `-3%` 이하 하락했는지 뜻합니다.")
-        st.markdown("- 해석할 때는 매수 후보는 수익률이 플러스인지, 매도 후보는 수익률이 마이너스인지 먼저 보면 됩니다.")
+        st.markdown("**품목별 수출 추이 읽는 법**")
+        st.markdown("- 이 영역은 API에서 받아온 관세청 `수출 주요품목별 10일 단위 잠정치 통계`를 보여줍니다.")
+        st.markdown("- 단위는 모두 **천달러**입니다.")
+        st.markdown("- `01~10`, `01~20`, `01~31`은 각각 월초, 중순, 월말 누적치입니다.")
+        st.markdown("- `전체`는 총수출액이고, 각 품목 행은 품목별 수출액입니다.")
+        st.markdown("- `전월대비`는 직전 달 대비 증감률, `전년동월대비`는 같은 달 작년과 비교한 증감률입니다.")
+        st.markdown("- `계절성지수`는 월별 평균이 전체 평균 대비 얼마나 강한지 보는 보조 지표입니다.")
+        st.markdown("- 이 데이터는 종목 자체를 찍는 값이 아니라, **산업 환경이 좋아지는지** 보는 상위 필터로 쓰는 게 맞습니다.")
 
 
 def load_latest_signals(signal_dir: str) -> tuple[pd.DataFrame, str | None]:
@@ -211,10 +213,135 @@ def format_validation_view(frame: pd.DataFrame) -> pd.DataFrame:
     return view.rename(columns=existing_map)
 
 
+def load_or_refresh_export_history(force_refresh: bool = False) -> pd.DataFrame:
+    frame = load_export_trend_history(EXPORT_TREND_PATH)
+    if not frame.empty and not force_refresh:
+        return frame
+
+    service_key = (
+        os.getenv("DATA_GO_KR_SERVICE_KEY")
+        or st.secrets.get("data_go_service_key")
+        or st.secrets.get("DATA_GO_KR_SERVICE_KEY")
+    )
+    if not service_key:
+        return frame
+
+    export_auth = ExportApiAuth(
+        service_key=service_key,
+        base_url=str(export_cfg.get("base_url", "https://apis.data.go.kr/1220000/prlstMmUtPrviExpAcrs")),
+        endpoint=str(export_cfg.get("endpoint", "getPrlstMmUtPrviExpAcrs")),
+    )
+    try:
+        fetched = fetch_export_trend_history(
+            export_auth,
+            start_month=str(export_cfg.get("start_month", "201601")),
+            end_month=pd.Timestamp.now().strftime("%Y%m"),
+            num_rows=int(export_cfg.get("num_rows", 1000)),
+        )
+    except Exception:  # noqa: BLE001
+        return frame
+
+    if fetched.empty:
+        return frame
+
+    if frame.empty:
+        save_export_trend_history(EXPORT_TREND_PATH, fetched)
+        return fetched
+
+    combined = pd.concat([frame, fetched], ignore_index=True)
+    combined = combined.drop_duplicates(subset=["월별", "기간"], keep="last").sort_values(["월별", "기간"]).reset_index(drop=True)
+    save_export_trend_history(EXPORT_TREND_PATH, combined)
+    return combined
+
+
+def prepare_export_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    view = frame.copy()
+    if view.empty:
+        return view
+
+    view["월별"] = pd.to_numeric(view["월별"], errors="coerce")
+    view = view.dropna(subset=["월별"]).copy()
+    view["월별"] = view["월별"].astype(int)
+    if "기간" not in view.columns:
+        view["기간"] = "01~31"
+    view["기간"] = view["기간"].astype(str)
+
+    numeric_cols = [col for col in view.columns if col not in {"월별", "기간"}]
+    for col in numeric_cols:
+        view[col] = pd.to_numeric(view[col], errors="coerce")
+
+    return view.sort_values(["기간", "월별"]).reset_index(drop=True)
+
+
+def latest_period_summary(frame: pd.DataFrame) -> tuple[dict[str, float], pd.DataFrame, pd.DataFrame]:
+    if frame.empty:
+        return {}, pd.DataFrame(), pd.DataFrame()
+
+    latest = frame.iloc[-1]
+    prev = frame.iloc[-2] if len(frame) > 1 else None
+    prev_year = frame[frame["월별"] == int(latest["월별"]) - 100]
+    prev_year_row = prev_year.iloc[0] if not prev_year.empty else None
+
+    summary: dict[str, float] = {
+        "월별": int(latest["월별"]),
+        "전체": float(latest["전체"]),
+        "전월대비": ((float(latest["전체"]) / float(prev["전체"]) - 1.0) * 100.0) if prev is not None and float(prev["전체"]) else float("nan"),
+        "전년동월대비": ((float(latest["전체"]) / float(prev_year_row["전체"]) - 1.0) * 100.0)
+        if prev_year_row is not None and float(prev_year_row["전체"])
+        else float("nan"),
+    }
+
+    item_cols = [col for col in frame.columns if col not in {"월별", "기간", "전체"}]
+    item_rows = []
+    for col in item_cols:
+        latest_val = float(latest[col]) if pd.notna(latest[col]) else float("nan")
+        share = (latest_val / summary["전체"] * 100.0) if summary["전체"] else float("nan")
+        mom = ((latest_val / float(prev[col]) - 1.0) * 100.0) if prev is not None and float(prev[col]) else float("nan")
+        yoy = ((latest_val / float(prev_year_row[col]) - 1.0) * 100.0) if prev_year_row is not None and float(prev_year_row[col]) else float("nan")
+        item_rows.append(
+            {
+                "품목": col,
+                "최신값(천달러)": latest_val,
+                "비중(%)": share,
+                "전월대비(%)": mom,
+                "전년동월대비(%)": yoy,
+            }
+        )
+
+    item_summary = pd.DataFrame(item_rows).sort_values("최신값(천달러)", ascending=False).reset_index(drop=True)
+
+    trend = frame[["월별", "전체"]].copy()
+    trend["월별표시"] = trend["월별"].astype(str)
+    return summary, item_summary, trend
+
+
+def seasonality_summary(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame()
+    view = frame.copy()
+    view["month"] = view["월별"].astype(str).str[-2:].astype(int)
+    period = view[view["기간"] == "01~31"].copy()
+    if period.empty:
+        period = view.copy()
+    cols = [col for col in period.columns if col not in {"월별", "기간", "month"}]
+    summary = period.groupby("month")[cols].mean(numeric_only=True).reset_index()
+    if "전체" not in summary.columns:
+        return pd.DataFrame()
+    total_mean = summary["전체"].mean()
+    summary["계절성지수(전체)"] = (summary["전체"] / total_mean * 100.0) if total_mean else float("nan")
+    return summary[["month", "전체", "계절성지수(전체)"]]
+
+
 def format_return(value: float | int | None) -> str:
     if pd.isna(value):
         return "-"
     return f"{float(value):+.2f}%"
+
+
+def format_export_amount(value: float | int | None) -> str:
+    if pd.isna(value):
+        return "-"
+    return f"{int(float(value)):,}천달러"
 
 
 def format_rate(value: float | int | None) -> str:
@@ -1221,151 +1348,80 @@ if not history.empty:
     )
     st.plotly_chart(figure, use_container_width=True)
 
-validation_header_col, validation_help_col = st.columns([20, 1])
-with validation_header_col:
-    st.subheader("예측평가")
-with validation_help_col:
+export_header_col, export_help_col, export_refresh_col = st.columns([20, 1, 2])
+with export_header_col:
+    st.subheader("품목별 수출 추이")
+with export_help_col:
     render_validation_help()
-if not validation_df.empty:
-    eval_view = prepare_evaluation_frame(validation_df, analysis_date)
+with export_refresh_col:
+    refresh_clicked = st.button("API 새로고침", key="export_refresh_btn", use_container_width=True)
 
-    if eval_view.empty:
-        st.info("아직 표시할 예측평가 데이터가 없습니다.")
-    else:
-        st.markdown("**추천 성과 추적 (내 추천 후보가 실제로 어땠는지)**")
-        rec_history = build_historical_recommendations(signals_history_df, top_n=6)
-        if rec_history.empty:
-            st.info("추천 이력 데이터가 없습니다.")
-        else:
-            merged_rec = rec_history.merge(
-                eval_view,
-                how="left",
-                on=["signal_date", "symbol", "name"],
-                suffixes=("_rec", ""),
-            )
-            perf_tabs = st.tabs(["1주(5거래일)", "2주(10거래일)", "1개월(20거래일)"])
-            perf_specs = [
-                ("1주(5거래일)", 5, 5),
-                ("2주(10거래일)", 10, 10),
-                ("1개월(20거래일)", 20, 20),
-            ]
-            for tab, spec in zip(perf_tabs, perf_specs):
-                _, horizon_days, lookback_dates = spec
-                with tab:
-                    summary = summarize_recommendation_performance(merged_rec, horizon_days, lookback_dates)
-                    if summary.empty:
-                        st.info("해당 기간은 아직 평가 완료된 추천 결과가 부족합니다.")
-                    else:
-                        total_row = summary[summary["구분"] == "TOTAL"]
-                        if not total_row.empty:
-                            total = total_row.iloc[0]
-                            status_ok = (float(total["평균수익률"]) > 0) and (float(total["승률"]) >= 50.0)
-                            status_label = "전략 통과" if status_ok else "전략 주의"
-                            status_bg = "#dcfce7" if status_ok else "#fee2e2"
-                            status_color = "#166534" if status_ok else "#991b1b"
-                            c1, c2, c3, c4 = st.columns(4)
-                            c1.metric("TOTAL 평가건수", f"{int(total['평가건수'])}건")
-                            c2.markdown(f"평균수익률: {styled_return_html(total['평균수익률'])}", unsafe_allow_html=True)
-                            c3.markdown(f"승률: {styled_rate_html(total['승률'])}", unsafe_allow_html=True)
-                            c4.markdown(f"총합수익률: {styled_return_html(total['총합수익률'])}", unsafe_allow_html=True)
-                            st.markdown(
-                                f"""<div style="display:inline-block; padding:6px 10px; border-radius:8px; background:{status_bg}; color:{status_color}; font-weight:700; margin:4px 0 10px 0;">{status_label}</div>""",
-                                unsafe_allow_html=True,
-                            )
+export_df = load_or_refresh_export_history(force_refresh=refresh_clicked)
+export_df = prepare_export_frame(export_df)
 
-                        summary_view = summary.copy()
-                        for col in ["평균수익률", "중앙값", "총합수익률"]:
-                            summary_view[col] = summary_view[col].map(format_return)
-                        summary_view["승률"] = summary_view["승률"].map(format_rate)
-                        st.dataframe(summary_view, use_container_width=True, hide_index=True)
-                        detail = build_recommendation_detail(merged_rec, horizon_days, lookback_dates)
-                        if not detail.empty:
-                            detail_view = detail.copy()
-                            detail_view["수익률"] = detail_view["수익률"].map(format_return)
-                            detail_view["전략수익률"] = detail_view["전략수익률"].map(format_return)
-                            st.markdown("`종목별 상세`")
-                            st.dataframe(
-                                detail_view,
-                                use_container_width=True,
-                                hide_index=True,
-                                height=280,
-                            )
-
-        completed_view = eval_view[eval_view["ret_5d"].notna()].copy()
-        if completed_view.empty:
-            st.info("5일 평가가 완료된 후보가 아직 없습니다.")
-        else:
-            knee_summary = summarize_side(completed_view, "knee_score", "knee_success", "up")
-            shoulder_summary = summarize_side(completed_view, "shoulder_score", "shoulder_success", "down")
-
-            summary_col1, summary_col2 = st.columns(2)
-            with summary_col1:
-                render_side_summary("Knee 매수 후보 성과", knee_summary, "+3% 성공률", "5일 플러스 비율")
-            with summary_col2:
-                render_side_summary("Shoulder 경고 후보 성과", shoulder_summary, "-3% 성공률", "5일 하락 비율")
-
-            st.markdown("**전략 품질 지표 (5일 기준)**")
-            quality_col1, quality_col2 = st.columns(2)
-            knee_candidates = completed_view[completed_view["knee_score"] >= CANDIDATE_DISPLAY_MIN_SCORE].copy()
-            shoulder_candidates = completed_view[completed_view["shoulder_score"] >= CANDIDATE_DISPLAY_MIN_SCORE].copy()
-            knee_quality = calculate_strategy_metrics(knee_candidates, "knee")
-            shoulder_quality = calculate_strategy_metrics(shoulder_candidates, "shoulder")
-
-            with quality_col1:
-                st.markdown("`Knee 전략`")
-                q1 = st.columns(4)
-                q1[0].metric("승률", format_rate(knee_quality["win_rate"]))
-                q1[1].metric("기대값", format_return(knee_quality["expectancy"]))
-                q1[2].metric("손익비", "-" if knee_quality["payoff"] is None else f"{knee_quality['payoff']:.2f}")
-                q1[3].metric("MDD", format_return(knee_quality["max_drawdown"]))
-            with quality_col2:
-                st.markdown("`Shoulder 전략`")
-                q2 = st.columns(4)
-                q2[0].metric("승률", format_rate(shoulder_quality["win_rate"]))
-                q2[1].metric("기대값", format_return(shoulder_quality["expectancy"]))
-                q2[2].metric("손익비", "-" if shoulder_quality["payoff"] is None else f"{shoulder_quality['payoff']:.2f}")
-                q2[3].metric("MDD", format_return(shoulder_quality["max_drawdown"]))
-
-            st.markdown("**시장국면별 성과**")
-            regime_tab1, regime_tab2 = st.tabs(["Knee", "Shoulder"])
-            with regime_tab1:
-                knee_regime = build_regime_summary(completed_view, "knee")
-                if knee_regime.empty:
-                    st.info("Knee 국면별 데이터가 아직 부족합니다.")
-                else:
-                    st.dataframe(knee_regime, use_container_width=True, hide_index=True)
-            with regime_tab2:
-                shoulder_regime = build_regime_summary(completed_view, "shoulder")
-                if shoulder_regime.empty:
-                    st.info("Shoulder 국면별 데이터가 아직 부족합니다.")
-                else:
-                    st.dataframe(shoulder_regime, use_container_width=True, hide_index=True)
-
-            st.markdown("**최근 완료 결과**")
-            tab_knee, tab_shoulder, tab_raw = st.tabs(["Knee", "Shoulder", "상세"])
-            with tab_knee:
-                recent_knee = format_recent_evaluation(completed_view, "knee")
-                if recent_knee.empty:
-                    st.info("최근 완료된 Knee 평가가 없습니다.")
-                else:
-                    st.dataframe(recent_knee, use_container_width=True, hide_index=True)
-            with tab_shoulder:
-                recent_shoulder = format_recent_evaluation(completed_view, "shoulder")
-                if recent_shoulder.empty:
-                    st.info("최근 완료된 Shoulder 평가가 없습니다.")
-                else:
-                    st.dataframe(recent_shoulder, use_container_width=True, hide_index=True)
-            with tab_raw:
-                raw_view = eval_view[
-                    (eval_view["knee_score"] >= CANDIDATE_DISPLAY_MIN_SCORE)
-                    | (eval_view["shoulder_score"] >= CANDIDATE_DISPLAY_MIN_SCORE)
-                ].copy()
-                recent_dates = sorted(raw_view["signal_date"].astype(str).unique())[-5:]
-                raw_view = raw_view[raw_view["signal_date"].astype(str).isin(recent_dates)].copy()
-                raw_view = raw_view.sort_values(["signal_date", "knee_score", "shoulder_score"], ascending=[False, False, False])
-                st.dataframe(format_validation_view(raw_view), use_container_width=True, hide_index=True)
+if export_df.empty:
+    st.info("수출 추이 데이터가 아직 없습니다. `DATA_GO_KR_SERVICE_KEY`를 설정하고 `python3 run_daily.py`를 실행하세요.")
 else:
-    st.info("예측평가 데이터가 아직 없습니다.")
+    period_order = [period for period in ["01~10", "01~20", "01~31"] if period in set(export_df["기간"].astype(str))]
+    if not period_order:
+        period_order = sorted(export_df["기간"].astype(str).unique().tolist())
+
+    export_tabs = st.tabs(period_order)
+    for tab, period in zip(export_tabs, period_order):
+        with tab:
+            period_frame = export_df[export_df["기간"].astype(str) == str(period)].copy()
+            if period_frame.empty:
+                st.info("이 기간의 데이터가 없습니다.")
+                continue
+
+            summary, item_summary, trend_view = latest_period_summary(period_frame)
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("최신 전체(천달러)", format_export_amount(summary.get("전체")))
+            c2.metric("전월대비", format_return(summary.get("전월대비")))
+            c3.metric("전년동월대비", format_return(summary.get("전년동월대비")))
+            c4.metric("관측월수", f"{len(period_frame)}개")
+
+            trend_fig = go.Figure()
+            trend_fig.add_trace(
+                go.Scatter(
+                    x=trend_view["월별표시"],
+                    y=trend_view["전체"],
+                    mode="lines+markers",
+                    name="전체",
+                    line=dict(width=2),
+                )
+            )
+            trend_fig.update_layout(
+                height=300,
+                margin=dict(l=10, r=10, t=10, b=10),
+                yaxis_title="천달러",
+                xaxis_title="월별",
+            )
+            st.plotly_chart(trend_fig, use_container_width=True)
+
+            st.markdown("**최신월 품목 요약**")
+            if not item_summary.empty:
+                item_view = item_summary.copy()
+                item_view["최신값(천달러)"] = item_view["최신값(천달러)"].map(lambda v: f"{int(v):,}" if pd.notna(v) else "-")
+                item_view["비중(%)"] = item_view["비중(%)"].map(format_rate)
+                item_view["전월대비(%)"] = item_view["전월대비(%)"].map(format_return)
+                item_view["전년동월대비(%)"] = item_view["전년동월대비(%)"].map(format_return)
+                st.dataframe(item_view.head(10), use_container_width=True, hide_index=True)
+
+            if str(period) == "01~31":
+                seasonality = seasonality_summary(period_frame)
+                if not seasonality.empty:
+                    st.markdown("**계절성 지수(전체)**")
+                    season_fig = go.Figure()
+                    season_fig.add_trace(
+                        go.Bar(
+                            x=seasonality["month"].astype(str),
+                            y=seasonality["계절성지수(전체)"],
+                            name="계절성 지수",
+                        )
+                    )
+                    season_fig.update_layout(height=260, margin=dict(l=10, r=10, t=10, b=10), yaxis_title="지수", xaxis_title="월")
+                    st.plotly_chart(season_fig, use_container_width=True)
 
 st.markdown(
     """

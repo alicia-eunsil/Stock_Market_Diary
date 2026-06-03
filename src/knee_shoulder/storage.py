@@ -89,3 +89,14 @@ def load_intraday_feature_history(path: Path) -> pd.DataFrame:
 def save_intraday_feature_history(path: Path, frame: pd.DataFrame) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     frame.to_csv(path, index=False, encoding="utf-8-sig")
+
+
+def load_export_trend_history(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_csv(path, dtype={"월별": str, "기간": str})
+
+
+def save_export_trend_history(path: Path, frame: pd.DataFrame) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_csv(path, index=False, encoding="utf-8-sig")
