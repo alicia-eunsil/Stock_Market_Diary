@@ -156,4 +156,10 @@ def fetch_export_trend_history(
     response = requests.get(url, params=params, timeout=30)
     response.raise_for_status()
     rows = _parse_xml_items(response.text)
+    if not rows:
+        snippet = re.sub(r"\s+", " ", response.text)[:500]
+        raise ValueError(
+            f"Public data API returned no rows. status={response.status_code} content_type={response.headers.get('content-type', '')} "
+            f"snippet={snippet}"
+        )
     return _normalize_rows(rows)
