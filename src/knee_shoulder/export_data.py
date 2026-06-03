@@ -51,6 +51,17 @@ def clamp_export_month_range(start_month: str, end_month: str, max_years: int = 
     return start.strftime("%Y%m"), end.strftime("%Y%m")
 
 
+def latest_published_export_month(now: datetime | None = None) -> str:
+    current = now or datetime.now()
+    if current.day < 11:
+        current = current.replace(day=1)
+        if current.month == 1:
+            current = current.replace(year=current.year - 1, month=12)
+        else:
+            current = current.replace(month=current.month - 1)
+    return current.strftime("%Y%m")
+
+
 def _to_int(value: str | None) -> int:
     if value is None:
         return 0

@@ -10,11 +10,17 @@ import streamlit as st
 
 from src.knee_shoulder.config import load_config
 try:
-    from src.knee_shoulder.export_data import ExportApiAuth, clamp_export_month_range, fetch_export_trend_history
+    from src.knee_shoulder.export_data import (
+        ExportApiAuth,
+        clamp_export_month_range,
+        fetch_export_trend_history,
+        latest_published_export_month,
+    )
 except ImportError:  # pragma: no cover - fail soft on partial deployments
     ExportApiAuth = None
     clamp_export_month_range = None
     fetch_export_trend_history = None
+    latest_published_export_month = None
 
 from src.knee_shoulder.storage import (
     load_all_signal_files,
@@ -247,7 +253,7 @@ def load_or_refresh_export_history(force_refresh: bool = False) -> pd.DataFrame:
         endpoint=str(export_cfg.get("endpoint", "getPrlstMmUtPrviExpAcrs")),
     )
     start_month = str(export_cfg.get("start_month", "201601"))
-    end_month = pd.Timestamp.now().strftime("%Y%m")
+    end_month = latest_published_export_month()
     start_month, end_month = clamp_export_month_range(start_month, end_month)
     num_rows = int(export_cfg.get("num_rows", 1000))
     key_variants = [service_key]
