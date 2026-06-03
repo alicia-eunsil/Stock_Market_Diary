@@ -2,38 +2,19 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from urllib.parse import unquote
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 from src.knee_shoulder.config import load_config
-try:
-    from src.knee_shoulder.export_data import (
-        ExportApiAuth,
-        clamp_export_month_range,
-        fetch_export_trend_history,
-        latest_published_export_month,
-    )
-except ImportError:  # pragma: no cover - fail soft on partial deployments
-    ExportApiAuth = None
-    clamp_export_month_range = None
-    fetch_export_trend_history = None
-    latest_published_export_month = None
-
 from src.knee_shoulder.storage import (
     load_all_signal_files,
+    load_export_trend_history,
     load_existing_history,
     load_intraday_feature_history,
     load_validation_history,
 )
-
-try:
-    from src.knee_shoulder.storage import load_export_trend_history, save_export_trend_history
-except ImportError:  # pragma: no cover - fail soft on partial deployments
-    load_export_trend_history = None
-    save_export_trend_history = None
 
 
 st.set_page_config(page_title="Knee Shoulder Monitor", page_icon="🌻", layout="wide")
@@ -71,7 +52,6 @@ CANDIDATE_DISPLAY_MIN_SCORE = config["runtime"]["signal_threshold"]
 CANDIDATE_TABLE_HEIGHT = 245
 validation_cfg = config.get("validation", {})
 risk_cfg = config.get("risk_control", {})
-export_cfg = config.get("export_data", {})
 RISK_PER_TRADE_PCT = float(validation_cfg.get("risk_per_trade_pct", 1.0))
 STOP_LOSS_PCT = float(validation_cfg.get("stop_loss_pct", 3.0))
 TARGET_PROFIT_PCT = float(validation_cfg.get("target_profit_pct", 6.0))
@@ -231,69 +211,10 @@ def format_validation_view(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_or_refresh_export_history(force_refresh: bool = False) -> pd.DataFrame:
-    if load_export_trend_history is None or save_export_trend_history is None or ExportApiAuth is None or fetch_export_trend_history is None:
-        return pd.DataFrame()
-
     frame = load_export_trend_history(EXPORT_TREND_PATH)
-    if not frame.empty and not force_refresh:
-        return frame
-
-    service_key = (
-        os.getenv("DATA_GO_KR_SERVICE_KEY")
-        or st.secrets.get("data_go_service_key")
-        or st.secrets.get("DATA_GO_KR_SERVICE_KEY")
-    )
-    if not service_key:
-        st.session_state["export_refresh_status"] = "missing_key"
-        return frame
-
-    export_auth = ExportApiAuth(
-        service_key=service_key,
-        base_url=str(export_cfg.get("base_url", "https://apis.data.go.kr/1220000/prlstMmUtPrviExpAcrs")),
-        endpoint=str(export_cfg.get("endpoint", "getPrlstMmUtPrviExpAcrs")),
-    )
-    start_month = str(export_cfg.get("start_month", "201601"))
-    end_month = latest_published_export_month()
-    start_month, end_month = clamp_export_month_range(start_month, end_month)
-    num_rows = int(export_cfg.get("num_rows", 1000))
-    key_variants = [service_key]
-    decoded_key = unquote(service_key)
-    if decoded_key not in key_variants:
-        key_variants.append(decoded_key)
-
-    fetched = pd.DataFrame()
-    last_error: str | None = None
-    for candidate_key in key_variants:
-        export_auth.service_key = candidate_key
-        try:
-            fetched = fetch_export_trend_history(
-                export_auth,
-                start_month=start_month,
-                end_month=end_month,
-                num_rows=num_rows,
-            )
-            if not fetched.empty:
-                st.session_state["export_refresh_status"] = "ok"
-                break
-            last_error = "empty_response"
-        except Exception as exc:  # noqa: BLE001
-            last_error = str(exc)
-            continue
-
-    if fetched.empty:
-        st.session_state["export_refresh_status"] = f"failed:{last_error or 'unknown'}"
-        return frame
-
-    if frame.empty:
-        save_export_trend_history(EXPORT_TREND_PATH, fetched)
-        st.session_state["export_refresh_status"] = "ok"
-        return fetched
-
-    combined = pd.concat([frame, fetched], ignore_index=True)
-    combined = combined.drop_duplicates(subset=["월별", "기간"], keep="last").sort_values(["월별", "기간"]).reset_index(drop=True)
-    save_export_trend_history(EXPORT_TREND_PATH, combined)
-    st.session_state["export_refresh_status"] = "ok"
-    return combined
+    if force_refresh:
+        st.session_state["export_refresh_status"] = "reloaded"
+    return frame
 
 
 def prepare_export_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -1396,19 +1317,13 @@ with export_header_col:
 with export_help_col:
     render_validation_help()
 with export_refresh_col:
-    refresh_clicked = st.button("API 새로고침", key="export_refresh_btn", use_container_width=True)
+    refresh_clicked = st.button("파일 다시읽기", key="export_refresh_btn", use_container_width=True)
 
 export_df = load_or_refresh_export_history(force_refresh=refresh_clicked)
 export_df = prepare_export_frame(export_df)
 
 if export_df.empty:
-    status = st.session_state.get("export_refresh_status")
-    if status == "missing_key":
-        st.info("수출 추이 데이터가 아직 없습니다. `DATA_GO_KR_SERVICE_KEY`를 확인하세요.")
-    elif isinstance(status, str) and status.startswith("failed:"):
-        st.warning(f"수출 API 호출 실패: {status.removeprefix('failed:')}")
-    else:
-        st.info("수출 추이 데이터가 아직 없습니다. `DATA_GO_KR_SERVICE_KEY`를 설정하고 `python3 run_daily.py`를 실행하세요.")
+    st.info("수출 추이 데이터가 아직 없습니다. `data/external/export_trends.csv` 파일을 확인하세요.")
 else:
     period_order = [period for period in ["01~10", "01~20", "01~31"] if period in set(export_df["기간"].astype(str))]
     if not period_order:
