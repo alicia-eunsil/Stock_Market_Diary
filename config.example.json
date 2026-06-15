@@ -1,51 +1,21 @@
 {
-  "kis": {
-    "base_url": "https://openapi.koreainvestment.com:9443"
-  },
   "paths": {
     "stock_master": "data/master/stocks_kr.csv",
     "raw_dir": "data/raw",
-    "patch_dir": "data/patches",
-    "signal_dir": "data/signals",
-    "intraday_dir": "data/intraday",
-    "intraday_feature_file": "data/intraday/intraday_features.csv",
-    "export_trend_file": "data/external/export_trends.csv",
-    "validation_file": "data/validation/signal_validation.csv",
-    "log_dir": "logs"
+    "comment_file": "data/comments/market_comments.csv"
   },
-  "runtime": {
-    "market": "KR",
-    "history_lookback_days": 180,
-    "incremental_recheck_days": 3,
-    "min_rows_required": 60,
-    "min_volume": 100000,
-    "min_turnover_rebound": 150000000000,
-    "min_turnover_trend": 300000000000,
-    "signal_threshold": 65,
-    "strong_threshold": 80,
-    "request_sleep_sec": 0.12
-  },
-  "validation": {
-    "forward_days": [1, 3, 5, 10, 20],
-    "knee_success_return_pct": 3.0,
-    "shoulder_success_return_pct": -3.0,
-    "evaluation_window_days": 5,
-    "benchmark_symbol": "005930",
-    "risk_per_trade_pct": 1.0,
-    "stop_loss_pct": 3.0,
-    "target_profit_pct": 6.0,
-    "account_size_krw": 10000000
-  },
-  "risk_control": {
-    "roundtrip_cost_bps": 25,
-    "max_mdd_stop_pct": -8.0,
-    "oos_test_days": 20,
-    "oos_train_days": 60
-  },
-  "export_data": {
-    "base_url": "https://apis.data.go.kr/1220000/prlstMmUtPrviExpAcrs",
-    "endpoint": "getPrlstMmUtPrviExpAcrs",
-    "start_month": "201601",
-    "num_rows": 1000
+  "stock_dashboard": {
+    "market_cap_limit": 40,
+    "default_watchlist": [
+      "005930",
+      "000660",
+      "373220",
+      "035420",
+      "035720",
+      "207940",
+      "005380",
+      "000270"
+    ],
+    "history_days": 120
   }
 }

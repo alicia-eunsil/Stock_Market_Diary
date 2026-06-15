@@ -1,70 +1,43 @@
-# Knee/Shoulder Stock Monitor
+# Stock Market Dashboard
 
-한국투자증권 API를 사용해 매일 오후 4시에 종목별 일봉을 수집하고, `무릎(knee)` / `어깨(shoulder)` 후보를 점수화해 보여주는 프로젝트입니다.
+Streamlit 기반 주식시장 대시보드입니다.
 
-## 구성
+## 주요 기능
 
-- `run_daily.py`: 배치 실행 진입점
-- `app.py`: Streamlit 대시보드
-- `src/knee_shoulder/`: API, 마스터, 지표, 신호, 검증 로직
-- `data/master/stocks_kr.csv`: 종목 마스터
-- `data/raw/`: 종목별 누적 일봉 CSV
-- `data/patches/`: 일자별 패치 CSV
-- `data/signals/`: 일자별 신호 CSV
-- `data/validation/signal_validation.csv`: 누적 검증 결과
+- 한국 주식시장 시가총액 상위 종목 조회
+- 사용자가 지정한 관심종목 일별 종가 그래프와 표
+- 코스피, 코스닥, 나스닥 등락 확인
+- 미국 국채 10년 금리 변화 확인
+- 아침/저녁 주식변동 코멘트 저장
 
-## 시작
-
-1. `config.example.json`을 `config.json`으로 복사
-2. 민감정보는 파일 대신 환경변수로 설정
-3. 종목 마스터 생성
+## 실행
 
 ```bash
-export KIS_APP_KEY='YOUR_APP_KEY'
-export KIS_APP_SECRET='YOUR_APP_SECRET'
-export KIS_BASE_URL='https://openapi.koreainvestment.com:9443'
-
-python3 run_daily.py \
-  --rebuild-master \
-  --master-source '/Users/alicia/Desktop/#python/#Version2_broad_/KR_Stocks_Individual.xlsx'
-```
-
-4. 일일 배치 실행
-
-```bash
-python3 run_daily.py
-```
-
-5. 대시보드 실행
-
-```bash
+python3 -m pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## launchd 자동 실행
-
-`launchd`는 터미널의 `export` 값을 자동으로 가져오지 않으므로, 아래 값을 `~/.bash_profile`에 넣어둬야 합니다.
+접속코드를 쓰려면 실행 전에 `ACCESS_CODE`를 설정합니다.
 
 ```bash
-export KIS_APP_KEY='YOUR_APP_KEY'
-export KIS_APP_SECRET='YOUR_APP_SECRET'
-export KIS_BASE_URL='https://openapi.koreainvestment.com:9443'
+export ACCESS_CODE='YOUR_CODE'
+streamlit run app.py
 ```
 
-자동 실행 스크립트:
+## 설정
 
-- [run_daily_launchd.sh](/Users/alicia/Desktop/#python/knee_shoulder_stock/deploy/launchd/run_daily_launchd.sh)
+기본 관심종목과 조회 기간은 `config.json`에서 바꿉니다.
 
-`launchd` 설정 파일:
+- `stock_dashboard.market_cap_limit`: 시가총액 상위 표시 개수
+- `stock_dashboard.default_watchlist`: 기본 관심종목 코드 목록
+- `stock_dashboard.history_days`: 종가 그래프 조회 기간
+- `paths.comment_file`: 코멘트 저장 CSV 경로
 
-- [com.alicia.knee-shoulder-stock.plist](/Users/alicia/Desktop/#python/knee_shoulder_stock/deploy/launchd/com.alicia.knee-shoulder-stock.plist)
+## 데이터
 
-## 비고
+- 국내 시가총액: KRX 조회를 우선 사용하고, 실패하면 네이버 금융 시가총액 데이터를 사용합니다.
+- 국내 종가: `pykrx`를 우선 사용하고, 실패하면 기존 `data/raw/*.csv` 로컬 데이터를 fallback으로 사용합니다.
+- 지수/금리: Yahoo Finance(`yfinance`)를 사용합니다.
+- 코멘트: `data/comments/market_comments.csv`에 저장합니다.
 
-- 종목 목록 원본은 `KR_Stocks_Individual.xlsx`의 `종목` 시트를 사용합니다.
-- `data/raw/`와 `data/signals/` 등 실행 산출물은 `.gitignore`에 포함했습니다.
-- 민감정보는 기본적으로 `KIS_APP_KEY`, `KIS_APP_SECRET`, `KIS_BASE_URL` 환경변수에서 읽습니다.
-- `secrets.json`은 로컬 fallback 용도이며 GitHub에 올리면 안 됩니다.
-- 첫 실행은 `history_lookback_days`만큼 넓게 적재하고, 이후 실행은 각 종목의 최신 저장일 기준 `incremental_recheck_days`만큼만 재조회합니다.
-- 기본 분석 기준일은 항상 "어제 마지막 확정 거래일"입니다. 장중 실행해도 오늘 미완성 봉은 저장/신호 계산에서 제외합니다.
-- 첫 버전은 가격/거래량 기반 신호에 집중했고, 투자자별 매매량 API는 2차 확장용으로 남겨두었습니다.
+Streamlit Community Cloud에서는 로컬 CSV 저장이 영구 보존되지 않을 수 있습니다. 장기 기록이 필요하면 Google Sheets, Supabase, Firebase 같은 외부 저장소로 옮기는 것이 좋습니다.
