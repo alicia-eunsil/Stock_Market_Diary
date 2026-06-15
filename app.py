@@ -18,19 +18,15 @@ try:
 except Exception:  # noqa: BLE001
     yf = None
 
-try:
-    from pykrx import stock
-except Exception:  # noqa: BLE001
-    stock = None
-
-
 st.set_page_config(page_title="Stock Market Dashboard", page_icon="KR", layout="wide")
 
 
-INDEX_TICKERS = {
-    "KOSPI": "^KS11",
-    "KOSDAQ": "^KQ11",
+GLOBAL_INDEX_TICKERS = {
     "NASDAQ": "^IXIC",
+}
+NAVER_INDEX_SYMBOLS = {
+    "KOSPI": "KOSPI",
+    "KOSDAQ": "KOSDAQ",
 }
 TREASURY_TICKER = "^TNX"
 COMMENT_COLUMNS = ["date", "session", "comment", "created_at"]
@@ -103,19 +99,6 @@ def color_for_change(value: float | int | None) -> str:
     if float(value) < 0:
         return "#2563eb"
     return "#6b7280"
-
-
-def nearest_krx_date(max_lookback: int = 10) -> str:
-    today = datetime.now()
-    for offset in range(max_lookback + 1):
-        target = (today - timedelta(days=offset)).strftime("%Y%m%d")
-        try:
-            cap = stock.get_market_cap_by_ticker(target, market="ALL")
-        except Exception:  # noqa: BLE001
-            continue
-        if not cap.empty:
-            return target
-    return today.strftime("%Y%m%d")
 
 
 def load_local_master() -> pd.DataFrame:
@@ -196,108 +179,93 @@ def load_naver_market_cap(limit: int) -> tuple[pd.DataFrame, str | None]:
 
 @st.cache_data(ttl=60 * 60 * 6, show_spinner=False)
 def load_top_market_cap(limit: int) -> tuple[pd.DataFrame, str | None, str | None]:
-    if stock is None:
-        try:
-            naver, base_date = load_naver_market_cap(limit)
-        except Exception as exc:  # noqa: BLE001
-            fallback = load_local_top_symbols(limit)
-            return fallback, None, f"pykrx 미설치 및 네이버 시총 조회 실패로 로컬 종목 마스터를 사용합니다: {exc}"
-        return naver, base_date, "pykrx가 설치되어 있지 않아 네이버 금융 시가총액 데이터를 사용합니다."
-
     try:
-        base_date = nearest_krx_date()
-        cap = stock.get_market_cap_by_ticker(base_date, market="ALL")
-        if cap.empty:
-            return pd.DataFrame(), base_date, "KRX 시가총액 데이터를 가져오지 못했습니다."
+        naver, base_date = load_naver_market_cap(limit)
+        if not naver.empty:
+            return naver, base_date, None
+    except Exception as naver_exc:  # noqa: BLE001
+        naver_error = str(naver_exc)
+    else:
+        naver_error = "네이버 시가총액 데이터 없음"
 
-        kospi_symbols = set(stock.get_market_ticker_list(base_date, market="KOSPI"))
-        kosdaq_symbols = set(stock.get_market_ticker_list(base_date, market="KOSDAQ"))
-        frame = cap.reset_index().rename(columns={"티커": "symbol"})
-        frame["symbol"] = frame["symbol"].astype(str).str.zfill(6)
-        frame["name"] = frame["symbol"].map(lambda symbol: stock.get_market_ticker_name(symbol))
-        frame["market"] = frame["symbol"].map(
-            lambda symbol: "KOSPI" if symbol in kospi_symbols else ("KOSDAQ" if symbol in kosdaq_symbols else "KRX")
-        )
-        frame = frame.rename(
-            columns={
-                "종가": "close",
-                "시가총액": "market_cap",
-                "거래량": "volume",
-                "거래대금": "turnover",
-                "상장주식수": "shares",
+    fallback = load_local_top_symbols(limit)
+    if fallback.empty:
+        return pd.DataFrame(), None, f"네이버 시가총액 조회 실패: {naver_error}"
+    return fallback, None, f"네이버 시가총액 조회 실패로 로컬 종목 마스터를 사용합니다: {naver_error}"
+
+
+def load_naver_chart(symbol: str, count: int, label: str | None = None) -> pd.DataFrame:
+    url = "https://fchart.stock.naver.com/sise.nhn"
+    response = requests.get(
+        url,
+        params={"symbol": symbol, "timeframe": "day", "count": count, "requestType": "0"},
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=10,
+    )
+    response.raise_for_status()
+    response.encoding = "euc-kr"
+    soup = BeautifulSoup(response.text, "xml")
+    rows = []
+    for item in soup.select("item"):
+        raw = item.get("data", "")
+        parts = raw.split("|")
+        if len(parts) < 6:
+            continue
+        rows.append(
+            {
+                "date": pd.to_datetime(parts[0], format="%Y%m%d", errors="coerce"),
+                "open": float(parts[1]),
+                "high": float(parts[2]),
+                "low": float(parts[3]),
+                "close": float(parts[4]),
+                "volume": float(parts[5]),
             }
         )
-        frame = frame.sort_values("market_cap", ascending=False).head(limit).reset_index(drop=True)
-        frame["rank"] = frame.index + 1
-        return frame[["rank", "symbol", "name", "market", "close", "market_cap", "volume", "turnover"]], base_date, None
-    except Exception as exc:  # noqa: BLE001
-        try:
-            naver, base_date = load_naver_market_cap(limit)
-        except Exception:  # noqa: BLE001
-            naver = pd.DataFrame()
-            base_date = None
-        if not naver.empty:
-            return naver, base_date, f"KRX 시가총액 조회 실패로 네이버 금융 시가총액 데이터를 사용합니다: {exc}"
-        fallback = load_local_top_symbols(limit)
-        if fallback.empty:
-            return pd.DataFrame(), None, f"KRX 시가총액 조회 실패: {exc}"
-        return fallback, None, f"KRX 시가총액 조회 실패로 로컬 종목 마스터를 사용합니다: {exc}"
+    frame = pd.DataFrame(rows).dropna(subset=["date"])
+    if frame.empty:
+        return frame
+    if label is not None:
+        frame["label"] = label
+    return frame.sort_values("date").reset_index(drop=True)
 
 
 @st.cache_data(ttl=60 * 30, show_spinner=False)
 def load_stock_history(symbols: tuple[str, ...], days: int) -> tuple[pd.DataFrame, dict[str, str], str | None]:
-    if stock is None:
-        local_history = load_local_stock_history(symbols, days)
-        local_names = dict(zip(local_history["symbol"], local_history["name"], strict=False)) if not local_history.empty else {}
-        return local_history, local_names, "pykrx가 설치되어 있지 않아 로컬 CSV 데이터를 사용합니다."
     if not symbols:
         return pd.DataFrame(), {}, None
 
-    end_dt = datetime.now()
-    start_dt = end_dt - timedelta(days=max(days * 2, 90))
-    start = start_dt.strftime("%Y%m%d")
-    end = end_dt.strftime("%Y%m%d")
-    frames: list[pd.DataFrame] = []
-    names: dict[str, str] = {}
-    errors: list[str] = []
+    master = load_local_master()
+    master_names = dict(zip(master["symbol"], master["name"], strict=False)) if not master.empty else {}
+    meta, _, _ = load_top_market_cap(max(80, len(symbols)))
+    meta_names = dict(zip(meta["symbol"], meta["name"], strict=False)) if not meta.empty else {}
+    name_map = {**master_names, **meta_names}
 
+    naver_frames = []
+    naver_errors = []
     for symbol in symbols:
         try:
-            names[symbol] = stock.get_market_ticker_name(symbol)
-            hist = stock.get_market_ohlcv_by_date(start, end, symbol)
+            hist = load_naver_chart(symbol, days)
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"{symbol}: {exc}")
+            naver_errors.append(f"{symbol}: {exc}")
             continue
         if hist.empty:
+            naver_errors.append(f"{symbol}: 데이터 없음")
             continue
-        hist = hist.reset_index().rename(
-            columns={
-                "날짜": "date",
-                "시가": "open",
-                "고가": "high",
-                "저가": "low",
-                "종가": "close",
-                "거래량": "volume",
-                "등락률": "change_pct",
-            }
-        )
-        hist["date"] = pd.to_datetime(hist["date"])
         hist["symbol"] = symbol
-        hist["name"] = names[symbol]
-        frames.append(hist[["date", "symbol", "name", "open", "high", "low", "close", "volume", "change_pct"]])
+        hist["name"] = name_map.get(symbol, symbol)
+        hist["change_pct"] = hist["close"].pct_change() * 100.0
+        naver_frames.append(hist[["date", "symbol", "name", "open", "high", "low", "close", "volume", "change_pct"]])
 
-    if not frames:
-        local_history = load_local_stock_history(symbols, days)
-        if not local_history.empty:
-            local_names = dict(zip(local_history["symbol"], local_history["name"], strict=False))
-            return local_history, local_names, "실시간 종가 조회 실패로 로컬 CSV 데이터를 사용합니다."
-        detail = "; ".join(errors[:5])
-        return pd.DataFrame(), names, f"종가 데이터를 가져오지 못했습니다. {detail}".strip()
+    if naver_frames:
+        combined = pd.concat(naver_frames, ignore_index=True)
+        warning = "; ".join(naver_errors[:5]) if naver_errors else None
+        return combined.reset_index(drop=True), name_map, warning
 
-    combined = pd.concat(frames, ignore_index=True)
-    combined = combined.sort_values(["symbol", "date"]).groupby("symbol", group_keys=False).tail(days)
-    warning = "; ".join(errors[:5]) if errors else None
-    return combined.reset_index(drop=True), names, warning
+    local_history = load_local_stock_history(symbols, days)
+    if not local_history.empty:
+        local_names = dict(zip(local_history["symbol"], local_history["name"], strict=False))
+        return local_history, local_names, f"네이버 종가 조회 실패로 로컬 CSV 데이터를 사용합니다: {'; '.join(naver_errors[:5])}"
+    return pd.DataFrame(), name_map, f"종가 데이터를 가져오지 못했습니다: {'; '.join(naver_errors[:5])}"
 
 
 def load_local_stock_history(symbols: tuple[str, ...], days: int) -> pd.DataFrame:
@@ -353,6 +321,32 @@ def load_yfinance_history(tickers: dict[str, str], period: str) -> tuple[pd.Data
         frame["date"] = pd.to_datetime(frame["date"]).dt.tz_localize(None)
         frame["label"] = label
         frames.append(frame)
+
+    if not frames:
+        return pd.DataFrame(), "; ".join(errors)
+    return pd.concat(frames, ignore_index=True), "; ".join(errors) if errors else None
+
+
+@st.cache_data(ttl=60 * 15, show_spinner=False)
+def load_index_history(period: str) -> tuple[pd.DataFrame, str | None]:
+    frames = []
+    errors = []
+    for label, symbol in NAVER_INDEX_SYMBOLS.items():
+        try:
+            frame = load_naver_chart(symbol, 180, label=label)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{label}: {exc}")
+            continue
+        if frame.empty:
+            errors.append(f"{label}: 데이터 없음")
+            continue
+        frames.append(frame[["date", "close", "label"]])
+
+    global_history, global_warning = load_yfinance_history(GLOBAL_INDEX_TICKERS, period)
+    if not global_history.empty:
+        frames.append(global_history)
+    elif global_warning:
+        errors.append(global_warning)
 
     if not frames:
         return pd.DataFrame(), "; ".join(errors)
@@ -527,7 +521,7 @@ def main() -> None:
     if cap_error:
         st.warning(cap_error)
     if not selected_symbols:
-        st.error("조회할 종목이 없습니다. 관심종목을 입력하거나 KRX 데이터를 확인하세요.")
+        st.error("조회할 종목이 없습니다. 관심종목을 입력하거나 네이버 금융 데이터 연결을 확인하세요.")
         st.stop()
 
     with st.spinner("종목별 일별 종가를 불러오는 중입니다."):
@@ -536,7 +530,7 @@ def main() -> None:
         st.warning(stock_warning)
 
     with st.spinner("지수와 금리 데이터를 불러오는 중입니다."):
-        index_history, index_warning = load_yfinance_history(INDEX_TICKERS, "6mo")
+        index_history, index_warning = load_index_history("6mo")
         treasury_history, treasury_warning = load_yfinance_history({"미국 10년물 금리": TREASURY_TICKER}, "6mo")
     if index_warning:
         st.warning(index_warning)

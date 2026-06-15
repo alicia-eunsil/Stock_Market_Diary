@@ -35,8 +35,8 @@ streamlit run app.py
 
 ## 데이터
 
-- 국내 시가총액: KRX 조회를 우선 사용하고, 실패하면 네이버 금융 시가총액 데이터를 사용합니다.
-- 국내 종가: `pykrx`를 우선 사용하고, 실패하면 기존 `data/raw/*.csv` 로컬 데이터를 fallback으로 사용합니다.
+- 국내 시가총액: 네이버 금융 시가총액 데이터를 사용합니다.
+- 국내 종가: 네이버 금융 일봉 차트 데이터를 사용하고, 실패하면 기존 `data/raw/*.csv` 로컬 데이터를 fallback으로 사용합니다.
 - 지수/금리: Yahoo Finance(`yfinance`)를 사용합니다.
 - 코멘트: `data/comments/market_comments.csv`에 저장합니다.
 
