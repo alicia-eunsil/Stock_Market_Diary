@@ -644,7 +644,12 @@ def render_portfolio_panel(portfolio_path: Path, stock_history: pd.DataFrame, na
         display["기준일"] = pd.to_datetime(display["기준일"], errors="coerce").dt.date
     st.dataframe(display, width="stretch", hide_index=True, height=360)
 
-    delete_symbol = st.selectbox("삭제할 보유 종목", options=[""] + view["종목코드"].tolist(), format_func=lambda value: "선택 안 함" if not value else value)
+    delete_labels = dict(zip(view["종목코드"], view["종목명"], strict=False))
+    delete_symbol = st.selectbox(
+        "삭제할 보유 종목",
+        options=[""] + view["종목코드"].tolist(),
+        format_func=lambda value: "선택 안 함" if not value else f"{delete_labels.get(value, value)} ({value})",
+    )
     if st.button("선택 종목 삭제") and delete_symbol:
         updated = portfolio[portfolio["symbol"] != delete_symbol].copy()
         save_portfolio(portfolio_path, updated)
