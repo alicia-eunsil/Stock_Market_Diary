@@ -8,6 +8,7 @@ Streamlit 기반 주식시장 대시보드입니다.
 - 사용자가 지정한 관심종목 일별 종가 그래프와 표
 - 코스피, 코스닥, 나스닥 등락 확인
 - 미국 국채 10년 금리 변화 확인
+- 보유 종목의 매입가격, 보유수, 현재가, 수익률, -10% 가격 확인
 - 아침/저녁 주식변동 코멘트 저장
 
 ## 실행
@@ -32,12 +33,14 @@ streamlit run app.py
 - `stock_dashboard.default_watchlist`: 기본 관심종목 코드 목록
 - `stock_dashboard.history_days`: 종가 그래프 조회 기간
 - `paths.comment_file`: 코멘트 저장 CSV 경로
+- `paths.portfolio_file`: 보유 종목 저장 CSV 경로
 
 ## 데이터
 
 - 국내 시가총액: 네이버 금융 시가총액 데이터를 사용합니다.
 - 국내 종가: 네이버 금융 일봉 차트 데이터를 사용하고, 실패하면 기존 `data/raw/*.csv` 로컬 데이터를 fallback으로 사용합니다.
 - 지수/금리: Yahoo Finance(`yfinance`)를 사용합니다.
+- 보유 종목: `data/portfolio/holdings.csv`에 저장합니다.
 - 코멘트: `data/comments/market_comments.csv`에 저장합니다.
 
 Streamlit Community Cloud에서는 로컬 CSV 저장이 영구 보존되지 않을 수 있습니다. 장기 기록이 필요하면 Google Sheets, Supabase, Firebase 같은 외부 저장소로 옮기는 것이 좋습니다.

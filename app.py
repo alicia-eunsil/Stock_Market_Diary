@@ -32,6 +32,7 @@ NAVER_INDEX_SYMBOLS = {
 }
 TREASURY_TICKER = "^TNX"
 COMMENT_COLUMNS = ["date", "session", "comment", "created_at"]
+PORTFOLIO_COLUMNS = ["symbol", "name", "avg_buy_price", "quantity", "memo", "updated_at"]
 APP_VERSION = "2026-06-15-regex-naver-chart"
 
 
@@ -86,6 +87,12 @@ def format_market_cap(value: float | int | None) -> str:
         return f"{trillion:.1f}조원"
     billion = float(value) / 1_0000_0000
     return f"{billion:.0f}억원"
+
+
+def format_number(value: float | int | None) -> str:
+    if value is None or pd.isna(value):
+        return "-"
+    return f"{float(value):,.0f}"
 
 
 def format_pct(value: float | int | None) -> str:
@@ -502,6 +509,149 @@ def save_comment(path: Path, target_date, session: str, comment: str) -> None:
     updated.to_csv(path, index=False, encoding="utf-8-sig")
 
 
+def load_portfolio(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame(columns=PORTFOLIO_COLUMNS)
+    frame = pd.read_csv(path, dtype={"symbol": str})
+    for column in PORTFOLIO_COLUMNS:
+        if column not in frame.columns:
+            frame[column] = ""
+    frame["symbol"] = frame["symbol"].astype(str).str.zfill(6)
+    frame["avg_buy_price"] = pd.to_numeric(frame["avg_buy_price"], errors="coerce")
+    frame["quantity"] = pd.to_numeric(frame["quantity"], errors="coerce")
+    return frame[PORTFOLIO_COLUMNS].dropna(subset=["symbol"]).reset_index(drop=True)
+
+
+def save_portfolio(path: Path, frame: pd.DataFrame) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    clean = frame.copy()
+    for column in PORTFOLIO_COLUMNS:
+        if column not in clean.columns:
+            clean[column] = ""
+    clean["symbol"] = clean["symbol"].astype(str).map(normalize_symbol)
+    clean["avg_buy_price"] = pd.to_numeric(clean["avg_buy_price"], errors="coerce")
+    clean["quantity"] = pd.to_numeric(clean["quantity"], errors="coerce")
+    clean = clean[(clean["symbol"] != "000000") & clean["avg_buy_price"].notna() & clean["quantity"].notna()].copy()
+    clean["name"] = clean["name"].fillna("")
+    clean["memo"] = clean["memo"].fillna("")
+    clean["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    clean[PORTFOLIO_COLUMNS].to_csv(path, index=False, encoding="utf-8-sig")
+
+
+def build_portfolio_view(portfolio: pd.DataFrame, stock_history: pd.DataFrame, name_map: dict[str, str]) -> pd.DataFrame:
+    if portfolio.empty:
+        return pd.DataFrame()
+
+    latest_rows = []
+    if not stock_history.empty:
+        latest_rows = (
+            stock_history.sort_values("date")
+            .groupby("symbol", as_index=False)
+            .tail(1)[["symbol", "name", "date", "close"]]
+            .to_dict("records")
+        )
+    latest_map = {str(row["symbol"]).zfill(6): row for row in latest_rows}
+
+    rows = []
+    for row in portfolio.itertuples(index=False):
+        symbol = normalize_symbol(row.symbol)
+        avg_buy_price = float(row.avg_buy_price)
+        quantity = float(row.quantity)
+        latest = latest_map.get(symbol, {})
+        current_price = latest.get("close")
+        current_value = float(current_price) * quantity if current_price is not None and pd.notna(current_price) else None
+        buy_value = avg_buy_price * quantity
+        profit = current_value - buy_value if current_value is not None else None
+        profit_pct = ((float(current_price) / avg_buy_price) - 1.0) * 100.0 if current_price is not None and avg_buy_price else None
+        rows.append(
+            {
+                "종목코드": symbol,
+                "종목명": row.name or latest.get("name") or name_map.get(symbol, symbol),
+                "매입가격": avg_buy_price,
+                "보유수": quantity,
+                "현재가": current_price,
+                "수익률": profit_pct,
+                "평가손익": profit,
+                "매입금액": buy_value,
+                "평가금액": current_value,
+                "-10% 가격": avg_buy_price * 0.9,
+                "기준일": latest.get("date"),
+                "메모": row.memo,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def render_portfolio_panel(portfolio_path: Path, stock_history: pd.DataFrame, name_map: dict[str, str]) -> None:
+    st.subheader("내 보유 종목")
+    portfolio = load_portfolio(portfolio_path)
+
+    with st.form("portfolio_add_form", clear_on_submit=True):
+        cols = st.columns([1, 1.3, 1, 1, 2])
+        symbol = cols[0].text_input("종목코드", placeholder="005930")
+        name = cols[1].text_input("종목명", placeholder="삼성전자")
+        avg_buy_price = cols[2].number_input("매입가격", min_value=0.0, step=100.0)
+        quantity = cols[3].number_input("보유수", min_value=0.0, step=1.0)
+        memo = cols[4].text_input("메모", placeholder="계좌/전략 등")
+        submitted = st.form_submit_button("보유 종목 저장", type="primary")
+        if submitted:
+            normalized = normalize_symbol(symbol)
+            if normalized == "000000" or avg_buy_price <= 0 or quantity <= 0:
+                st.warning("종목코드, 매입가격, 보유수를 확인하세요.")
+            else:
+                new_row = pd.DataFrame(
+                    [
+                        {
+                            "symbol": normalized,
+                            "name": name.strip() or name_map.get(normalized, normalized),
+                            "avg_buy_price": avg_buy_price,
+                            "quantity": quantity,
+                            "memo": memo.strip(),
+                            "updated_at": datetime.now().isoformat(timespec="seconds"),
+                        }
+                    ]
+                )
+                updated = pd.concat([portfolio[portfolio["symbol"] != normalized], new_row], ignore_index=True)
+                save_portfolio(portfolio_path, updated)
+                st.success("보유 종목을 저장했습니다.")
+                st.rerun()
+
+    if portfolio.empty:
+        st.caption("저장된 보유 종목이 없습니다.")
+        return
+
+    view = build_portfolio_view(portfolio, stock_history, name_map)
+    if view.empty:
+        st.caption("보유 종목을 불러오지 못했습니다.")
+        return
+
+    total_buy = pd.to_numeric(view["매입금액"], errors="coerce").sum()
+    total_value = pd.to_numeric(view["평가금액"], errors="coerce").sum()
+    total_profit = total_value - total_buy if total_buy else None
+    total_profit_pct = (total_profit / total_buy * 100.0) if total_buy else None
+    cols = st.columns(4)
+    cols[0].metric("총 매입금액", format_krw(total_buy))
+    cols[1].metric("총 평가금액", format_krw(total_value))
+    cols[2].metric("총 평가손익", format_krw(total_profit), format_pct(total_profit_pct))
+    cols[3].metric("보유 종목 수", f"{len(view)}개")
+
+    display = view.copy()
+    for column in ["매입가격", "현재가", "평가손익", "매입금액", "평가금액", "-10% 가격"]:
+        display[column] = display[column].map(format_krw)
+    display["보유수"] = display["보유수"].map(format_number)
+    display["수익률"] = display["수익률"].map(format_pct)
+    if "기준일" in display.columns:
+        display["기준일"] = pd.to_datetime(display["기준일"], errors="coerce").dt.date
+    st.dataframe(display, width="stretch", hide_index=True, height=360)
+
+    delete_symbol = st.selectbox("삭제할 보유 종목", options=[""] + view["종목코드"].tolist(), format_func=lambda value: "선택 안 함" if not value else value)
+    if st.button("선택 종목 삭제") and delete_symbol:
+        updated = portfolio[portfolio["symbol"] != delete_symbol].copy()
+        save_portfolio(portfolio_path, updated)
+        st.success("삭제했습니다.")
+        st.rerun()
+
+
 def render_metric_card(label: str, value: str, delta: float | None) -> None:
     st.metric(label, value, format_pct(delta) if delta is not None else None)
 
@@ -544,6 +694,8 @@ def main() -> None:
     dashboard_cfg = config.get("stock_dashboard", {})
     paths = config.get("paths", {})
     comment_path = Path(paths.get("comment_file", "data/comments/market_comments.csv"))
+    portfolio_path = Path(paths.get("portfolio_file", "data/portfolio/holdings.csv"))
+    portfolio_df = load_portfolio(portfolio_path)
 
     st.title("Stock Market Dashboard")
     st.caption("국내 시가총액 상위 종목, 관심종목, 주요 지수, 미국 10년물 금리, 데일리 코멘트")
@@ -565,8 +717,9 @@ def main() -> None:
         top_meta, cap_date, cap_error = load_top_market_cap(limit, APP_VERSION)
 
     custom_symbols = parse_symbol_list(raw_watchlist)
+    portfolio_symbols = portfolio_df["symbol"].astype(str).str.zfill(6).tolist() if not portfolio_df.empty else []
     top_symbols = top_meta["symbol"].astype(str).tolist() if not top_meta.empty else []
-    selected_symbols = list(dict.fromkeys(top_symbols + custom_symbols))
+    selected_symbols = list(dict.fromkeys(top_symbols + custom_symbols + portfolio_symbols))
 
     if cap_error:
         st.warning(cap_error)
@@ -598,7 +751,7 @@ def main() -> None:
         latest = latest_change_table(treasury_history).iloc[0]
         st.metric("미국 국채 10년 금리", f"{latest['종가']:.2f}%", format_pct(latest["전일대비"]))
 
-    tabs = st.tabs(["종목 종가", "시장 지표", "코멘트"])
+    tabs = st.tabs(["종목 종가", "포트폴리오", "시장 지표", "코멘트"])
 
     with tabs[0]:
         if cap_date:
@@ -637,6 +790,9 @@ def main() -> None:
             st.dataframe(table, width="stretch", hide_index=True, height=520)
 
     with tabs[1]:
+        render_portfolio_panel(portfolio_path, stock_history, symbol_names)
+
+    with tabs[2]:
         cols = st.columns([1, 1])
         with cols[0]:
             if index_history.empty:
@@ -663,7 +819,7 @@ def main() -> None:
                 rate_table["전일대비"] = rate_table["전일대비"].map(format_pct)
                 st.dataframe(rate_table, width="stretch", hide_index=True)
 
-    with tabs[2]:
+    with tabs[3]:
         render_comment_panel(comment_path)
 
 

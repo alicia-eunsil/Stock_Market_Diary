@@ -2,7 +2,8 @@
   "paths": {
     "stock_master": "data/master/stocks_kr.csv",
     "raw_dir": "data/raw",
-    "comment_file": "data/comments/market_comments.csv"
+    "comment_file": "data/comments/market_comments.csv",
+    "portfolio_file": "data/portfolio/holdings.csv"
   },
   "stock_dashboard": {
     "market_cap_limit": 40,
