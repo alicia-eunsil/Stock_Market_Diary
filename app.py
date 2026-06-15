@@ -774,10 +774,12 @@ def main() -> None:
         for col, row in zip(metric_cols, index_latest.itertuples(index=False), strict=False):
             with col:
                 render_metric_card(str(row.구분), f"{row.종가:,.2f}", row.전일대비)
+                st.caption(f"기준일: {row.기준일}")
 
     if not treasury_history.empty:
         latest = latest_change_table(treasury_history).iloc[0]
         st.metric("미국 국채 10년 금리", f"{latest['종가']:.2f}%", format_pct(latest["전일대비"]))
+        st.caption(f"기준일: {latest['기준일']}")
 
     tabs = st.tabs(["종목 종가", "포트폴리오", "시장 지표", "코멘트"])
 
