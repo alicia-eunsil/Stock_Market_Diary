@@ -597,11 +597,18 @@ def style_portfolio_display(display: pd.DataFrame, source: pd.DataFrame) -> pd.i
     return display.style.apply(cell_style, axis=1)
 
 
-def colored_return_html(value: float | int | None) -> str:
-    if value is None or pd.isna(value):
-        return "<span style='color:#6b7280; font-weight:700;'>-</span>"
-    color = "#dc2626" if float(value) > 0 else ("#2563eb" if float(value) < 0 else "#6b7280")
-    return f"<span style='color:{color}; font-weight:700;'>{format_pct(value)}</span>"
+def inject_metric_delta_color_overrides() -> None:
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stMetricDelta"] *[style*="rgb(9, 171, 59)"] {
+            color: #2563eb !important;
+            fill: #2563eb !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_portfolio_panel(portfolio_path: Path, stock_history: pd.DataFrame, name_map: dict[str, str]) -> None:
@@ -654,8 +661,7 @@ def render_portfolio_panel(portfolio_path: Path, stock_history: pd.DataFrame, na
     cols = st.columns(4)
     cols[0].metric("총 매입금액", format_krw(total_buy))
     cols[1].metric("총 평가금액", format_krw(total_value))
-    cols[2].metric("총 평가손익", format_krw(total_profit))
-    cols[2].markdown(colored_return_html(total_profit_pct), unsafe_allow_html=True)
+    cols[2].metric("총 평가손익", format_krw(total_profit), format_pct(total_profit_pct), delta_color="inverse")
     cols[3].metric("보유 종목 수", f"{len(view)}개")
 
     display = view.copy()
@@ -734,6 +740,7 @@ def main() -> None:
     if st.session_state.get("app_cache_version") != APP_VERSION:
         st.cache_data.clear()
         st.session_state["app_cache_version"] = APP_VERSION
+    inject_metric_delta_color_overrides()
 
     config = load_config()
     dashboard_cfg = config.get("stock_dashboard", {})
