@@ -607,10 +607,26 @@ def main() -> None:
             st.error("종목 종가 데이터가 없습니다.")
         else:
             summary = stock_summary_table(stock_history, top_meta, selected_symbols)
-            st.plotly_chart(
-                line_chart(stock_history, "date", "close", "name", "종목별 일별 종가", normalize=normalize),
-                width="stretch",
+            chart_options = summary[["종목코드", "종목명"]].copy()
+            chart_options["label"] = chart_options["종목코드"] + " | " + chart_options["종목명"]
+            option_labels = chart_options["label"].tolist()
+            label_to_symbol = dict(zip(chart_options["label"], chart_options["종목코드"], strict=False))
+            default_labels = option_labels[: min(5, len(option_labels))]
+            selected_chart_labels = st.multiselect(
+                "그래프에 표시할 종목",
+                options=option_labels,
+                default=default_labels,
+                placeholder="종목을 선택하세요",
             )
+            chart_symbols = {label_to_symbol[label] for label in selected_chart_labels}
+            chart_history = stock_history[stock_history["symbol"].isin(chart_symbols)].copy()
+            if chart_history.empty:
+                st.info("그래프에 표시할 종목을 선택하세요.")
+            else:
+                st.plotly_chart(
+                    line_chart(chart_history, "date", "close", "name", "선택 종목 일별 종가", normalize=normalize),
+                    width="stretch",
+                )
             table = summary.copy()
             for col in ["종가"]:
                 table[col] = table[col].map(format_krw)
