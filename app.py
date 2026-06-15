@@ -32,7 +32,7 @@ NAVER_INDEX_SYMBOLS = {
 }
 TREASURY_TICKER = "^TNX"
 COMMENT_COLUMNS = ["date", "session", "comment", "created_at"]
-APP_VERSION = "2026-06-15-xml-parser-fix"
+APP_VERSION = "2026-06-15-cache-bust-xml-parser"
 
 
 def load_config(config_path: str = "config.json") -> dict:
@@ -181,7 +181,7 @@ def load_naver_market_cap(limit: int) -> tuple[pd.DataFrame, str | None]:
 
 
 @st.cache_data(ttl=60 * 60 * 6, show_spinner=False)
-def load_top_market_cap(limit: int) -> tuple[pd.DataFrame, str | None, str | None]:
+def load_top_market_cap(limit: int, cache_version: str) -> tuple[pd.DataFrame, str | None, str | None]:
     try:
         naver, base_date = load_naver_market_cap(limit)
         if not naver.empty:
@@ -232,13 +232,13 @@ def load_naver_chart(symbol: str, count: int, label: str | None = None) -> pd.Da
 
 
 @st.cache_data(ttl=60 * 30, show_spinner=False)
-def load_stock_history(symbols: tuple[str, ...], days: int) -> tuple[pd.DataFrame, dict[str, str], str | None]:
+def load_stock_history(symbols: tuple[str, ...], days: int, cache_version: str) -> tuple[pd.DataFrame, dict[str, str], str | None]:
     if not symbols:
         return pd.DataFrame(), {}, None
 
     master = load_local_master()
     master_names = dict(zip(master["symbol"], master["name"], strict=False)) if not master.empty else {}
-    meta, _, _ = load_top_market_cap(max(80, len(symbols)))
+    meta, _, _ = load_top_market_cap(max(80, len(symbols)), cache_version)
     meta_names = dict(zip(meta["symbol"], meta["name"], strict=False)) if not meta.empty else {}
     name_map = {**master_names, **meta_names}
 
@@ -329,7 +329,7 @@ def load_yahoo_chart_history(label: str, ticker: str, period: str) -> pd.DataFra
 
 
 @st.cache_data(ttl=60 * 15, show_spinner=False)
-def load_yfinance_history(tickers: dict[str, str], period: str) -> tuple[pd.DataFrame, str | None]:
+def load_yfinance_history(tickers: dict[str, str], period: str, cache_version: str) -> tuple[pd.DataFrame, str | None]:
     frames = []
     errors = []
     for label, ticker in tickers.items():
@@ -374,7 +374,7 @@ def load_yfinance_history(tickers: dict[str, str], period: str) -> tuple[pd.Data
 
 
 @st.cache_data(ttl=60 * 15, show_spinner=False)
-def load_index_history(period: str) -> tuple[pd.DataFrame, str | None]:
+def load_index_history(period: str, cache_version: str) -> tuple[pd.DataFrame, str | None]:
     frames = []
     errors = []
     for label, symbol in NAVER_INDEX_SYMBOLS.items():
@@ -388,7 +388,7 @@ def load_index_history(period: str) -> tuple[pd.DataFrame, str | None]:
             continue
         frames.append(frame[["date", "close", "label"]])
 
-    global_history, global_warning = load_yfinance_history(GLOBAL_INDEX_TICKERS, period)
+    global_history, global_warning = load_yfinance_history(GLOBAL_INDEX_TICKERS, period, cache_version)
     if not global_history.empty:
         frames.append(global_history)
     elif global_warning:
@@ -537,6 +537,10 @@ def render_comment_panel(comment_path: Path) -> None:
 
 def main() -> None:
     require_access_code()
+    if st.session_state.get("app_cache_version") != APP_VERSION:
+        st.cache_data.clear()
+        st.session_state["app_cache_version"] = APP_VERSION
+
     config = load_config()
     dashboard_cfg = config.get("stock_dashboard", {})
     paths = config.get("paths", {})
@@ -559,7 +563,7 @@ def main() -> None:
             st.rerun()
 
     with st.spinner("시장 데이터를 불러오는 중입니다."):
-        top_meta, cap_date, cap_error = load_top_market_cap(limit)
+        top_meta, cap_date, cap_error = load_top_market_cap(limit, APP_VERSION)
 
     custom_symbols = parse_symbol_list(raw_watchlist)
     top_symbols = top_meta["symbol"].astype(str).tolist() if not top_meta.empty else []
@@ -572,13 +576,13 @@ def main() -> None:
         st.stop()
 
     with st.spinner("종목별 일별 종가를 불러오는 중입니다."):
-        stock_history, symbol_names, stock_warning = load_stock_history(tuple(selected_symbols), history_days)
+        stock_history, symbol_names, stock_warning = load_stock_history(tuple(selected_symbols), history_days, APP_VERSION)
     if stock_warning:
         st.warning(stock_warning)
 
     with st.spinner("지수와 금리 데이터를 불러오는 중입니다."):
-        index_history, index_warning = load_index_history("6mo")
-        treasury_history, treasury_warning = load_yfinance_history({"미국 10년물 금리": TREASURY_TICKER}, "6mo")
+        index_history, index_warning = load_index_history("6mo", APP_VERSION)
+        treasury_history, treasury_warning = load_yfinance_history({"미국 10년물 금리": TREASURY_TICKER}, "6mo", APP_VERSION)
     if index_warning:
         st.warning(index_warning)
     if treasury_warning:
