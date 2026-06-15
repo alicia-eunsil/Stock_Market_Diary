@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import json
-import xml.etree.ElementTree as ET
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -32,7 +32,7 @@ NAVER_INDEX_SYMBOLS = {
 }
 TREASURY_TICKER = "^TNX"
 COMMENT_COLUMNS = ["date", "session", "comment", "created_at"]
-APP_VERSION = "2026-06-15-cache-bust-xml-parser"
+APP_VERSION = "2026-06-15-regex-naver-chart"
 
 
 def load_config(config_path: str = "config.json") -> dict:
@@ -206,10 +206,9 @@ def load_naver_chart(symbol: str, count: int, label: str | None = None) -> pd.Da
         timeout=10,
     )
     response.raise_for_status()
-    root = ET.fromstring(response.content)
+    text = response.content.decode("euc-kr", errors="ignore")
     rows = []
-    for item in root.iter("item"):
-        raw = item.get("data", "")
+    for raw in re.findall(r'<item\s+data="([^"]+)"\s*/?>', text):
         parts = raw.split("|")
         if len(parts) < 6:
             continue
