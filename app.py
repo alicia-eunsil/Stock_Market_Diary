@@ -680,8 +680,25 @@ def render_portfolio_panel(portfolio_path: Path, stock_history: pd.DataFrame, na
         st.rerun()
 
 
-def render_metric_card(label: str, value: str, delta: float | None) -> None:
-    st.metric(label, value, format_pct(delta) if delta is not None else None)
+def render_market_metric_card(label: str, value: str, delta: float | None, date_value) -> None:
+    if delta is None or pd.isna(delta):
+        delta_text = "-"
+        delta_color = "#6b7280"
+    else:
+        delta_text = format_pct(delta)
+        delta_color = "#dc2626" if float(delta) > 0 else ("#2563eb" if float(delta) < 0 else "#6b7280")
+    date_text = "-" if date_value is None or pd.isna(date_value) else str(date_value)
+    st.markdown(
+        f"""
+        <div style="border:1px solid #e5e7eb; border-radius:8px; padding:12px 14px; min-height:118px;">
+            <div style="font-size:13px; color:#6b7280; font-weight:700;">{label}</div>
+            <div style="font-size:25px; color:#111827; font-weight:800; margin-top:8px;">{value}</div>
+            <div style="font-size:14px; color:{delta_color}; font-weight:800; margin-top:6px;">전일대비 {delta_text}</div>
+            <div style="font-size:12px; color:#6b7280; margin-top:8px;">기준일: {date_text}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_comment_panel(comment_path: Path) -> None:
@@ -768,18 +785,23 @@ def main() -> None:
     if treasury_warning:
         st.warning(treasury_warning)
 
+    market_metric_rows = {}
     if not index_history.empty:
         index_latest = latest_change_table(index_history)
-        metric_cols = st.columns(3)
-        for col, row in zip(metric_cols, index_latest.itertuples(index=False), strict=False):
-            with col:
-                render_metric_card(str(row.구분), f"{row.종가:,.2f}", row.전일대비)
-                st.caption(f"기준일: {row.기준일}")
-
+        market_metric_rows.update({str(row["구분"]): row for row in index_latest.to_dict("records")})
     if not treasury_history.empty:
-        latest = latest_change_table(treasury_history).iloc[0]
-        st.metric("미국 국채 10년 금리", f"{latest['종가']:.2f}%", format_pct(latest["전일대비"]))
-        st.caption(f"기준일: {latest['기준일']}")
+        latest = latest_change_table(treasury_history).iloc[0].to_dict()
+        market_metric_rows["미국 국채 10년 금리"] = latest
+
+    metric_cols = st.columns(4)
+    for col, label in zip(metric_cols, ["KOSPI", "KOSDAQ", "NASDAQ", "미국 국채 10년 금리"], strict=False):
+        row = market_metric_rows.get(label)
+        with col:
+            if row:
+                value = f"{float(row['종가']):.2f}%" if label == "미국 국채 10년 금리" else f"{float(row['종가']):,.2f}"
+                render_market_metric_card(label, value, row.get("전일대비"), row.get("기준일"))
+            else:
+                render_market_metric_card(label, "-", None, None)
 
     tabs = st.tabs(["종목 종가", "포트폴리오", "시장 지표", "코멘트"])
 
