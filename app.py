@@ -582,6 +582,21 @@ def build_portfolio_view(portfolio: pd.DataFrame, stock_history: pd.DataFrame, n
     return pd.DataFrame(rows)
 
 
+def style_portfolio_display(display: pd.DataFrame, source: pd.DataFrame) -> pd.io.formats.style.Styler:
+    def cell_style(row: pd.Series) -> list[str]:
+        styles = [""] * len(row)
+        original = source.loc[row.name]
+        for column in ["수익률", "평가손익"]:
+            value = original.get(column)
+            if value is None or pd.isna(value) or column not in row.index:
+                continue
+            color = "#dc2626" if float(value) > 0 else ("#2563eb" if float(value) < 0 else "#6b7280")
+            styles[row.index.get_loc(column)] = f"color: {color}; font-weight: 700;"
+        return styles
+
+    return display.style.apply(cell_style, axis=1)
+
+
 def render_portfolio_panel(portfolio_path: Path, stock_history: pd.DataFrame, name_map: dict[str, str]) -> None:
     st.subheader("내 보유 종목")
     portfolio = load_portfolio(portfolio_path)
@@ -642,7 +657,7 @@ def render_portfolio_panel(portfolio_path: Path, stock_history: pd.DataFrame, na
     display["수익률"] = display["수익률"].map(format_pct)
     if "기준일" in display.columns:
         display["기준일"] = pd.to_datetime(display["기준일"], errors="coerce").dt.date
-    st.dataframe(display, width="stretch", hide_index=True, height=360)
+    st.dataframe(style_portfolio_display(display, view), width="stretch", hide_index=True, height=360)
 
     delete_labels = dict(zip(view["종목코드"], view["종목명"], strict=False))
     delete_symbol = st.selectbox(
