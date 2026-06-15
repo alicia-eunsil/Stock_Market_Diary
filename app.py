@@ -32,6 +32,7 @@ NAVER_INDEX_SYMBOLS = {
 }
 TREASURY_TICKER = "^TNX"
 COMMENT_COLUMNS = ["date", "session", "comment", "created_at"]
+APP_VERSION = "2026-06-15-xml-parser-fix"
 
 
 def load_config(config_path: str = "config.json") -> dict:
@@ -546,6 +547,7 @@ def main() -> None:
 
     with st.sidebar:
         st.header("설정")
+        st.caption(f"버전: {APP_VERSION}")
         limit = st.slider("시가총액 상위 종목 수", 10, 80, int(dashboard_cfg.get("market_cap_limit", 40)), step=5)
         history_days = st.slider("종가 조회 기간", 30, 260, int(dashboard_cfg.get("history_days", 120)), step=10)
         normalize = st.toggle("그래프를 100 기준으로 보기", value=True)
