@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -12,6 +13,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 from bs4 import BeautifulSoup
+from requests.utils import quote
 
 try:
     import yfinance as yf
@@ -203,10 +205,9 @@ def load_naver_chart(symbol: str, count: int, label: str | None = None) -> pd.Da
         timeout=10,
     )
     response.raise_for_status()
-    response.encoding = "euc-kr"
-    soup = BeautifulSoup(response.text, "xml")
+    root = ET.fromstring(response.content)
     rows = []
-    for item in soup.select("item"):
+    for item in root.iter("item"):
         raw = item.get("data", "")
         parts = raw.split("|")
         if len(parts) < 6:
@@ -297,21 +298,65 @@ def load_local_stock_history(symbols: tuple[str, ...], days: int) -> pd.DataFram
     return pd.concat(frames, ignore_index=True)
 
 
+def load_yahoo_chart_history(label: str, ticker: str, period: str) -> pd.DataFrame:
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(ticker, safe='')}"
+    response = requests.get(
+        url,
+        params={"range": period, "interval": "1d"},
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=10,
+    )
+    response.raise_for_status()
+    data = response.json()
+    result = (data.get("chart", {}).get("result") or [None])[0]
+    if not result:
+        return pd.DataFrame()
+
+    timestamps = result.get("timestamp") or []
+    quote_data = ((result.get("indicators") or {}).get("quote") or [{}])[0]
+    closes = quote_data.get("close") or []
+    if not timestamps or not closes:
+        return pd.DataFrame()
+
+    frame = pd.DataFrame({"date": pd.to_datetime(timestamps, unit="s"), "close": closes})
+    frame = frame.dropna(subset=["close"]).copy()
+    if frame.empty:
+        return frame
+    frame["date"] = frame["date"].dt.tz_localize(None)
+    frame["label"] = label
+    return frame[["date", "close", "label"]].sort_values("date").reset_index(drop=True)
+
+
 @st.cache_data(ttl=60 * 15, show_spinner=False)
 def load_yfinance_history(tickers: dict[str, str], period: str) -> tuple[pd.DataFrame, str | None]:
-    if yf is None:
-        return pd.DataFrame(), "yfinance가 설치되어 있지 않습니다."
-
     frames = []
     errors = []
     for label, ticker in tickers.items():
         try:
+            direct = load_yahoo_chart_history(label, ticker, period)
+        except Exception as exc:  # noqa: BLE001
+            direct = pd.DataFrame()
+            direct_error = str(exc)
+        else:
+            direct_error = ""
+
+        if not direct.empty:
+            frames.append(direct)
+            continue
+
+        if yf is None:
+            errors.append(f"{label}: Yahoo Chart API 실패, yfinance 미설치 ({direct_error})")
+            continue
+
+        try:
             data = yf.download(ticker, period=period, auto_adjust=False, progress=False, threads=False)
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"{label}: {exc}")
+            detail = f"{direct_error}; {exc}" if direct_error else str(exc)
+            errors.append(f"{label}: {detail}")
             continue
         if data.empty:
-            errors.append(f"{label}: 데이터 없음")
+            detail = f" ({direct_error})" if direct_error else ""
+            errors.append(f"{label}: 데이터 없음{detail}")
             continue
         close = data["Close"]
         if isinstance(close, pd.DataFrame):
