@@ -11,18 +11,13 @@
     </array>
     <key>WorkingDirectory</key>
     <string>/Users/alicia/Desktop/#python/knee_shoulder_stock</string>
-    <key>StartCalendarInterval</key>
-    <dict>
-        <key>Hour</key>
-        <integer>16</integer>
-        <key>Minute</key>
-        <integer>0</integer>
-    </dict>
     <key>StandardOutPath</key>
     <string>/Users/alicia/Desktop/#python/knee_shoulder_stock/logs/launchd.out.log</string>
     <key>StandardErrorPath</key>
     <string>/Users/alicia/Desktop/#python/knee_shoulder_stock/logs/launchd.err.log</string>
     <key>RunAtLoad</key>
     <false/>
+    <key>Disabled</key>
+    <true/>
 </dict>
 </plist>

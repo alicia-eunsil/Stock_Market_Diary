@@ -2,14 +2,13 @@ name: Daily Knee Shoulder Batch
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "30 8 * * 1-5"
 
 permissions:
   contents: write
 
 jobs:
   run-daily-batch:
+    if: false
     runs-on: ubuntu-latest
 
     env:
