@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import os
-import base64
 import json
 import re
-from io import StringIO
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -16,6 +14,14 @@ import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 from requests.utils import quote
+
+try:
+    import firebase_admin
+    from firebase_admin import credentials, firestore
+except Exception:  # noqa: BLE001
+    firebase_admin = None
+    credentials = None
+    firestore = None
 
 try:
     import yfinance as yf
@@ -35,10 +41,10 @@ NAVER_INDEX_SYMBOLS = {
 TREASURY_TICKER = "^TNX"
 COMMENT_COLUMNS = ["date", "session", "comment", "created_at"]
 PORTFOLIO_COLUMNS = ["symbol", "name", "avg_buy_price", "quantity", "memo", "updated_at"]
-APP_VERSION = "2026-06-17-github-persistent-storage"
+APP_VERSION = "2026-06-17-firebase-storage"
 
 
-class RemoteStorageError(RuntimeError):
+class FirebaseStorageError(RuntimeError):
     pass
 
 
@@ -61,78 +67,62 @@ def get_runtime_secret(name: str, default: str | None = None) -> str | None:
     return value if value else default
 
 
-def get_github_storage_config() -> dict[str, str] | None:
-    token = get_runtime_secret("GITHUB_TOKEN")
-    repo = get_runtime_secret("GITHUB_DATA_REPO") or get_runtime_secret("GITHUB_REPOSITORY")
-    if not token or not repo:
+def get_firebase_service_account() -> dict | None:
+    raw = get_runtime_secret("FIREBASE_SERVICE_ACCOUNT_JSON")
+    if raw:
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise FirebaseStorageError("FIREBASE_SERVICE_ACCOUNT_JSON 형식이 올바른 JSON이 아닙니다.") from exc
+
+    try:
+        firebase_secret = st.secrets.get("firebase", None)
+    except Exception:  # noqa: BLE001
+        firebase_secret = None
+    if firebase_secret:
+        return dict(firebase_secret)
+
+    return None
+
+
+def get_firebase_collection_prefix() -> str:
+    return get_runtime_secret("FIREBASE_COLLECTION_PREFIX", "stock_diary") or "stock_diary"
+
+
+@st.cache_resource(show_spinner=False)
+def get_firestore_client():
+    if firebase_admin is None or credentials is None or firestore is None:
+        raise FirebaseStorageError("firebase-admin 패키지가 설치되어 있지 않습니다.")
+
+    service_account = get_firebase_service_account()
+    if not service_account:
         return None
-    return {
-        "token": token,
-        "repo": repo,
-        "branch": get_runtime_secret("GITHUB_DATA_BRANCH", "main") or "main",
-    }
+
+    try:
+        app = firebase_admin.get_app("stock-diary")
+    except ValueError:
+        cred = credentials.Certificate(service_account)
+        app = firebase_admin.initialize_app(cred, name="stock-diary")
+    return firestore.client(app=app)
 
 
-def github_contents_url(repo: str, path: Path) -> str:
-    return f"https://api.github.com/repos/{repo}/contents/{quote(path.as_posix(), safe='/')}"
-
-
-def github_headers(token: str) -> dict[str, str]:
-    return {
-        "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {token}",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-
-
-def load_github_csv(path: Path, columns: list[str], dtype: dict[str, type] | None = None) -> pd.DataFrame | None:
-    config = get_github_storage_config()
-    if not config:
+def get_firestore_collection(name: str):
+    client = get_firestore_client()
+    if client is None:
         return None
-
-    response = requests.get(
-        github_contents_url(config["repo"], path),
-        headers=github_headers(config["token"]),
-        params={"ref": config["branch"]},
-        timeout=15,
-    )
-    if response.status_code == 404:
-        return pd.DataFrame(columns=columns)
-    if response.status_code >= 400:
-        raise RemoteStorageError(f"GitHub 저장소에서 {path} 파일을 읽지 못했습니다: {response.status_code}")
-
-    payload = response.json()
-    content = base64.b64decode(payload.get("content", "")).decode("utf-8-sig")
-    if not content.strip():
-        return pd.DataFrame(columns=columns)
-    return pd.read_csv(StringIO(content), dtype=dtype)
+    return client.collection(get_firebase_collection_prefix()).document(name).collection("items")
 
 
-def save_github_csv(path: Path, frame: pd.DataFrame, message: str) -> bool:
-    config = get_github_storage_config()
-    if not config:
-        return False
-
-    url = github_contents_url(config["repo"], path)
-    headers = github_headers(config["token"])
-    current = requests.get(url, headers=headers, params={"ref": config["branch"]}, timeout=15)
-    if current.status_code not in {200, 404}:
-        raise RemoteStorageError(f"GitHub 저장소의 {path} 상태를 확인하지 못했습니다: {current.status_code}")
-
-    output = StringIO()
-    frame.to_csv(output, index=False)
-    payload = {
-        "message": message,
-        "content": base64.b64encode(output.getvalue().encode("utf-8-sig")).decode("ascii"),
-        "branch": config["branch"],
-    }
-    if current.status_code == 200:
-        payload["sha"] = current.json().get("sha")
-
-    response = requests.put(url, headers=headers, json=payload, timeout=20)
-    if response.status_code >= 400:
-        raise RemoteStorageError(f"GitHub 저장소에 {path} 파일을 저장하지 못했습니다: {response.status_code}")
-    return True
+def prepare_firestore_record(row: dict) -> dict:
+    clean = {}
+    for key, value in row.items():
+        if pd.isna(value):
+            clean[key] = ""
+        elif hasattr(value, "item"):
+            clean[key] = value.item()
+        else:
+            clean[key] = value
+    return clean
 
 
 def require_access_code() -> None:
@@ -579,11 +569,21 @@ def line_chart(frame: pd.DataFrame, x: str, y: str, group: str, title: str, norm
 
 def load_comments(path: Path) -> pd.DataFrame:
     try:
-        remote = load_github_csv(path, COMMENT_COLUMNS)
-        if remote is not None:
-            return remote
-    except RemoteStorageError as error:
+        collection = get_firestore_collection("comments")
+    except FirebaseStorageError as error:
         st.warning(str(error))
+        collection = None
+    if collection is not None:
+        try:
+            rows = [document.to_dict() or {} for document in collection.stream()]
+        except Exception as exc:  # noqa: BLE001
+            st.warning(f"Firebase에서 코멘트를 읽지 못했습니다: {exc}")
+            rows = []
+        frame = pd.DataFrame(rows, columns=COMMENT_COLUMNS)
+        for column in COMMENT_COLUMNS:
+            if column not in frame.columns:
+                frame[column] = ""
+        return frame[COMMENT_COLUMNS]
 
     if not path.exists():
         return pd.DataFrame(columns=COMMENT_COLUMNS)
@@ -604,22 +604,77 @@ def save_comment(path: Path, target_date, session: str, comment: str) -> None:
     )
     updated = pd.concat([current, row], ignore_index=True)
     try:
-        if save_github_csv(path, updated, "Update stock diary comments"):
+        collection = get_firestore_collection("comments")
+        if collection is not None:
+            record = prepare_firestore_record(row.iloc[0].to_dict())
+            document_id = re.sub(r"[^0-9A-Za-z_-]", "_", f"{record['created_at']}_{record['session']}")
+            collection.document(document_id).set(record)
             return
-    except RemoteStorageError as error:
+    except FirebaseStorageError as error:
         st.error(str(error))
+        st.stop()
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Firebase에 코멘트를 저장하지 못했습니다: {exc}")
         st.stop()
 
     path.parent.mkdir(parents=True, exist_ok=True)
     updated.to_csv(path, index=False, encoding="utf-8-sig")
 
 
+def load_firebase_portfolio() -> pd.DataFrame | None:
+    try:
+        collection = get_firestore_collection("portfolio")
+    except FirebaseStorageError as error:
+        st.warning(str(error))
+        return None
+    if collection is None:
+        return None
+
+    rows = []
+    try:
+        for document in collection.stream():
+            row = document.to_dict() or {}
+            row["symbol"] = row.get("symbol") or document.id
+            rows.append(row)
+    except Exception as exc:  # noqa: BLE001
+        raise FirebaseStorageError(f"Firebase에서 포트폴리오를 읽지 못했습니다: {exc}") from exc
+
+    return pd.DataFrame(rows, columns=PORTFOLIO_COLUMNS)
+
+
+def save_firebase_portfolio(frame: pd.DataFrame) -> bool:
+    try:
+        collection = get_firestore_collection("portfolio")
+    except FirebaseStorageError as error:
+        st.error(str(error))
+        st.stop()
+    if collection is None:
+        return False
+
+    try:
+        existing_symbols = {document.id for document in collection.stream()}
+        incoming_symbols = set(frame["symbol"].astype(str))
+        batch = collection._client.batch()
+        for symbol in existing_symbols - incoming_symbols:
+            batch.delete(collection.document(symbol))
+        for row in frame.to_dict("records"):
+            symbol = normalize_symbol(row["symbol"])
+            batch.set(collection.document(symbol), prepare_firestore_record({**row, "symbol": symbol}))
+        batch.commit()
+    except Exception as exc:  # noqa: BLE001
+        raise FirebaseStorageError(f"Firebase에 포트폴리오를 저장하지 못했습니다: {exc}") from exc
+    return True
+
+
 def load_portfolio(path: Path) -> pd.DataFrame:
     try:
-        remote = load_github_csv(path, PORTFOLIO_COLUMNS, dtype={"symbol": str})
-        frame = remote if remote is not None else None
-    except RemoteStorageError as error:
+        firebase_frame = load_firebase_portfolio()
+    except FirebaseStorageError as error:
         st.warning(str(error))
+        firebase_frame = None
+    if firebase_frame is not None:
+        frame = firebase_frame
+    else:
         frame = None
 
     if frame is None:
@@ -637,10 +692,6 @@ def load_portfolio(path: Path) -> pd.DataFrame:
 
 
 def save_portfolio(path: Path, frame: pd.DataFrame) -> None:
-    if not get_github_storage_config():
-        st.error("GitHub 영구 저장 설정이 없어 포트폴리오를 저장하지 않았습니다.")
-        st.stop()
-
     clean = frame.copy()
     for column in PORTFOLIO_COLUMNS:
         if column not in clean.columns:
@@ -655,14 +706,14 @@ def save_portfolio(path: Path, frame: pd.DataFrame) -> None:
     clean = clean[PORTFOLIO_COLUMNS]
 
     try:
-        if save_github_csv(path, clean, "Update portfolio holdings"):
+        if save_firebase_portfolio(clean):
             return
-    except RemoteStorageError as error:
+    except FirebaseStorageError as error:
         st.error(str(error))
         st.stop()
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    clean.to_csv(path, index=False, encoding="utf-8-sig")
+    st.error("Firebase 영구 저장 설정이 없어 포트폴리오를 저장하지 않았습니다.")
+    st.stop()
 
 
 def build_portfolio_view(portfolio: pd.DataFrame, stock_history: pd.DataFrame, name_map: dict[str, str]) -> pd.DataFrame:
@@ -814,12 +865,17 @@ def inject_metric_delta_color_overrides() -> None:
 
 def render_portfolio_panel(portfolio_path: Path, stock_history: pd.DataFrame, name_map: dict[str, str]) -> None:
     st.subheader("내 보유 종목")
-    github_storage_enabled = get_github_storage_config() is not None
-    if github_storage_enabled:
-        st.caption("저장 위치: GitHub 영구 저장소")
+    firebase_storage_enabled = False
+    try:
+        firebase_storage_enabled = get_firestore_client() is not None
+    except FirebaseStorageError as error:
+        st.error(str(error))
+
+    if firebase_storage_enabled:
+        st.caption("저장 위치: Firebase Firestore")
     else:
-        st.error("GitHub 영구 저장 설정이 없습니다. 저장한 종목이 서버 재시작이나 재배포 때 사라질 수 있습니다.")
-        st.caption("Streamlit secrets에 GITHUB_TOKEN, GITHUB_DATA_REPO, GITHUB_DATA_BRANCH를 설정한 뒤 다시 저장하세요.")
+        st.error("Firebase 영구 저장 설정이 없습니다. 포트폴리오를 저장할 수 없습니다.")
+        st.caption("Streamlit secrets에 Firebase 서비스 계정 정보를 설정한 뒤 다시 저장하세요.")
 
     portfolio = load_portfolio(portfolio_path)
 
@@ -830,7 +886,7 @@ def render_portfolio_panel(portfolio_path: Path, stock_history: pd.DataFrame, na
         avg_buy_price = cols[2].number_input("매입가격", min_value=0.0, step=100.0)
         quantity = cols[3].number_input("보유수", min_value=0.0, step=1.0)
         memo = cols[4].text_input("메모", placeholder="계좌/전략 등")
-        submitted = st.form_submit_button("보유 종목 저장", type="primary", disabled=not github_storage_enabled)
+        submitted = st.form_submit_button("보유 종목 저장", type="primary", disabled=not firebase_storage_enabled)
         if submitted:
             normalized = normalize_symbol(symbol)
             if normalized == "000000" or avg_buy_price <= 0 or quantity <= 0:

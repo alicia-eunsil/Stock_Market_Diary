@@ -40,17 +40,26 @@ streamlit run app.py
 - 국내 시가총액: 네이버 금융 시가총액 데이터를 사용합니다.
 - 국내 종가: 네이버 금융 일봉 차트 데이터를 사용하고, 실패하면 기존 `data/raw/*.csv` 로컬 데이터를 fallback으로 사용합니다.
 - 지수/금리: Yahoo Finance(`yfinance`)를 사용합니다.
-- 보유 종목: `data/portfolio/holdings.csv`에 저장합니다.
-- 코멘트: `data/comments/market_comments.csv`에 저장합니다.
+- 보유 종목: Firebase Firestore에 저장합니다.
+- 코멘트: Firebase Firestore에 저장합니다.
 
-Streamlit Community Cloud에서는 로컬 CSV 저장이 영구 보존되지 않을 수 있습니다. 장기 기록을 유지하려면 GitHub 저장소 저장을 켭니다.
+Streamlit Community Cloud에서는 로컬 CSV 저장이 영구 보존되지 않을 수 있습니다. 보유 종목과 코멘트를 유지하려면 Firebase Firestore 저장을 켭니다.
 
-Streamlit secrets에 아래 값을 추가하면 보유 종목과 코멘트가 GitHub 저장소의 CSV 파일로 저장됩니다.
+Streamlit secrets에 Firebase 서비스 계정 정보를 추가하면 보유 종목과 코멘트가 Firestore에 저장됩니다.
 
 ```toml
-GITHUB_TOKEN = "YOUR_GITHUB_TOKEN"
-GITHUB_DATA_REPO = "alicia-eunsil/Stock_Market_Diary"
-GITHUB_DATA_BRANCH = "main"
+[firebase]
+type = "service_account"
+project_id = "YOUR_PROJECT_ID"
+private_key_id = "YOUR_PRIVATE_KEY_ID"
+private_key = "-----BEGIN PRIVATE KEY-----\nYOUR_PRIVATE_KEY\n-----END PRIVATE KEY-----\n"
+client_email = "firebase-adminsdk-...@YOUR_PROJECT_ID.iam.gserviceaccount.com"
+client_id = "YOUR_CLIENT_ID"
+auth_uri = "https://accounts.google.com/o/oauth2/auth"
+token_uri = "https://oauth2.googleapis.com/token"
+auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+client_x509_cert_url = "YOUR_CLIENT_CERT_URL"
+universe_domain = "googleapis.com"
 ```
 
-`GITHUB_TOKEN`은 해당 저장소의 Contents 읽기/쓰기 권한이 필요합니다. 저장 경로는 `config.json`의 `paths.portfolio_file`, `paths.comment_file` 값을 그대로 사용합니다.
+선택적으로 `FIREBASE_COLLECTION_PREFIX = "stock_diary"`를 설정하면 Firestore 저장 위치 prefix를 바꿀 수 있습니다.
