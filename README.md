@@ -49,7 +49,7 @@ Streamlit secrets에 아래 값을 추가하면 보유 종목과 코멘트가 Gi
 
 ```toml
 GITHUB_TOKEN = "YOUR_GITHUB_TOKEN"
-GITHUB_DATA_REPO = "alicia-eunsil/Knee_Shoulder_Monotor"
+GITHUB_DATA_REPO = "alicia-eunsil/Stock_Market_Diary"
 GITHUB_DATA_BRANCH = "main"
 ```
 
