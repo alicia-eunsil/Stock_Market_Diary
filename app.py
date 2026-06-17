@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import base64
 import json
 import re
+from io import StringIO
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -33,7 +35,11 @@ NAVER_INDEX_SYMBOLS = {
 TREASURY_TICKER = "^TNX"
 COMMENT_COLUMNS = ["date", "session", "comment", "created_at"]
 PORTFOLIO_COLUMNS = ["symbol", "name", "avg_buy_price", "quantity", "memo", "updated_at"]
-APP_VERSION = "2026-06-15-regex-naver-chart"
+APP_VERSION = "2026-06-17-github-persistent-storage"
+
+
+class RemoteStorageError(RuntimeError):
+    pass
 
 
 def load_config(config_path: str = "config.json") -> dict:
@@ -42,6 +48,91 @@ def load_config(config_path: str = "config.json") -> dict:
         return {}
     with path.open("r", encoding="utf-8") as file:
         return json.load(file)
+
+
+def get_runtime_secret(name: str, default: str | None = None) -> str | None:
+    value = os.getenv(name)
+    if value:
+        return value
+    try:
+        value = st.secrets.get(name, default)
+    except Exception:  # noqa: BLE001
+        return default
+    return value if value else default
+
+
+def get_github_storage_config() -> dict[str, str] | None:
+    token = get_runtime_secret("GITHUB_TOKEN")
+    repo = get_runtime_secret("GITHUB_DATA_REPO") or get_runtime_secret("GITHUB_REPOSITORY")
+    if not token or not repo:
+        return None
+    return {
+        "token": token,
+        "repo": repo,
+        "branch": get_runtime_secret("GITHUB_DATA_BRANCH", "main") or "main",
+    }
+
+
+def github_contents_url(repo: str, path: Path) -> str:
+    return f"https://api.github.com/repos/{repo}/contents/{quote(path.as_posix(), safe='/')}"
+
+
+def github_headers(token: str) -> dict[str, str]:
+    return {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+def load_github_csv(path: Path, columns: list[str], dtype: dict[str, type] | None = None) -> pd.DataFrame | None:
+    config = get_github_storage_config()
+    if not config:
+        return None
+
+    response = requests.get(
+        github_contents_url(config["repo"], path),
+        headers=github_headers(config["token"]),
+        params={"ref": config["branch"]},
+        timeout=15,
+    )
+    if response.status_code == 404:
+        return pd.DataFrame(columns=columns)
+    if response.status_code >= 400:
+        raise RemoteStorageError(f"GitHub 저장소에서 {path} 파일을 읽지 못했습니다: {response.status_code}")
+
+    payload = response.json()
+    content = base64.b64decode(payload.get("content", "")).decode("utf-8-sig")
+    if not content.strip():
+        return pd.DataFrame(columns=columns)
+    return pd.read_csv(StringIO(content), dtype=dtype)
+
+
+def save_github_csv(path: Path, frame: pd.DataFrame, message: str) -> bool:
+    config = get_github_storage_config()
+    if not config:
+        return False
+
+    url = github_contents_url(config["repo"], path)
+    headers = github_headers(config["token"])
+    current = requests.get(url, headers=headers, params={"ref": config["branch"]}, timeout=15)
+    if current.status_code not in {200, 404}:
+        raise RemoteStorageError(f"GitHub 저장소의 {path} 상태를 확인하지 못했습니다: {current.status_code}")
+
+    output = StringIO()
+    frame.to_csv(output, index=False)
+    payload = {
+        "message": message,
+        "content": base64.b64encode(output.getvalue().encode("utf-8-sig")).decode("ascii"),
+        "branch": config["branch"],
+    }
+    if current.status_code == 200:
+        payload["sha"] = current.json().get("sha")
+
+    response = requests.put(url, headers=headers, json=payload, timeout=20)
+    if response.status_code >= 400:
+        raise RemoteStorageError(f"GitHub 저장소에 {path} 파일을 저장하지 못했습니다: {response.status_code}")
+    return True
 
 
 def require_access_code() -> None:
@@ -487,13 +578,19 @@ def line_chart(frame: pd.DataFrame, x: str, y: str, group: str, title: str, norm
 
 
 def load_comments(path: Path) -> pd.DataFrame:
+    try:
+        remote = load_github_csv(path, COMMENT_COLUMNS)
+        if remote is not None:
+            return remote
+    except RemoteStorageError as error:
+        st.warning(str(error))
+
     if not path.exists():
         return pd.DataFrame(columns=COMMENT_COLUMNS)
     return pd.read_csv(path, dtype=str)
 
 
 def save_comment(path: Path, target_date, session: str, comment: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     current = load_comments(path)
     row = pd.DataFrame(
         [
@@ -506,13 +603,30 @@ def save_comment(path: Path, target_date, session: str, comment: str) -> None:
         ]
     )
     updated = pd.concat([current, row], ignore_index=True)
+    try:
+        if save_github_csv(path, updated, "Update stock diary comments"):
+            return
+    except RemoteStorageError as error:
+        st.error(str(error))
+        st.stop()
+
+    path.parent.mkdir(parents=True, exist_ok=True)
     updated.to_csv(path, index=False, encoding="utf-8-sig")
 
 
 def load_portfolio(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        return pd.DataFrame(columns=PORTFOLIO_COLUMNS)
-    frame = pd.read_csv(path, dtype={"symbol": str})
+    try:
+        remote = load_github_csv(path, PORTFOLIO_COLUMNS, dtype={"symbol": str})
+        frame = remote if remote is not None else None
+    except RemoteStorageError as error:
+        st.warning(str(error))
+        frame = None
+
+    if frame is None:
+        if not path.exists():
+            return pd.DataFrame(columns=PORTFOLIO_COLUMNS)
+        frame = pd.read_csv(path, dtype={"symbol": str})
+
     for column in PORTFOLIO_COLUMNS:
         if column not in frame.columns:
             frame[column] = ""
@@ -523,7 +637,6 @@ def load_portfolio(path: Path) -> pd.DataFrame:
 
 
 def save_portfolio(path: Path, frame: pd.DataFrame) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     clean = frame.copy()
     for column in PORTFOLIO_COLUMNS:
         if column not in clean.columns:
@@ -535,7 +648,17 @@ def save_portfolio(path: Path, frame: pd.DataFrame) -> None:
     clean["name"] = clean["name"].fillna("")
     clean["memo"] = clean["memo"].fillna("")
     clean["updated_at"] = datetime.now().isoformat(timespec="seconds")
-    clean[PORTFOLIO_COLUMNS].to_csv(path, index=False, encoding="utf-8-sig")
+    clean = clean[PORTFOLIO_COLUMNS]
+
+    try:
+        if save_github_csv(path, clean, "Update portfolio holdings"):
+            return
+    except RemoteStorageError as error:
+        st.error(str(error))
+        st.stop()
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    clean.to_csv(path, index=False, encoding="utf-8-sig")
 
 
 def build_portfolio_view(portfolio: pd.DataFrame, stock_history: pd.DataFrame, name_map: dict[str, str]) -> pd.DataFrame:

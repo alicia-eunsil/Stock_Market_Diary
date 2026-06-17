@@ -43,4 +43,14 @@ streamlit run app.py
 - 보유 종목: `data/portfolio/holdings.csv`에 저장합니다.
 - 코멘트: `data/comments/market_comments.csv`에 저장합니다.
 
-Streamlit Community Cloud에서는 로컬 CSV 저장이 영구 보존되지 않을 수 있습니다. 장기 기록이 필요하면 Google Sheets, Supabase, Firebase 같은 외부 저장소로 옮기는 것이 좋습니다.
+Streamlit Community Cloud에서는 로컬 CSV 저장이 영구 보존되지 않을 수 있습니다. 장기 기록을 유지하려면 GitHub 저장소 저장을 켭니다.
+
+Streamlit secrets에 아래 값을 추가하면 보유 종목과 코멘트가 GitHub 저장소의 CSV 파일로 저장됩니다.
+
+```toml
+GITHUB_TOKEN = "YOUR_GITHUB_TOKEN"
+GITHUB_DATA_REPO = "alicia-eunsil/Knee_Shoulder_Monotor"
+GITHUB_DATA_BRANCH = "main"
+```
+
+`GITHUB_TOKEN`은 해당 저장소의 Contents 읽기/쓰기 권한이 필요합니다. 저장 경로는 `config.json`의 `paths.portfolio_file`, `paths.comment_file` 값을 그대로 사용합니다.
