@@ -22,7 +22,7 @@ try:
 except Exception:  # noqa: BLE001
     yf = None
 
-st.set_page_config(page_title="Stock Market Dashboard", page_icon="🐬", layout="wide")
+st.set_page_config(page_title="Stock Market Dashboard", page_icon="🏖️", layout="wide")
 
 
 GLOBAL_INDEX_TICKERS = {
@@ -1017,7 +1017,7 @@ def main() -> None:
             else:
                 render_market_metric_card(label, "-", None, None)
 
-    tabs = st.tabs(["🐬 종목 종가", "🐬 포트폴리오", "🐬 시장 지표", "🐬 코멘트"])
+    tabs = st.tabs(["🏖️ 종목 종가", "🏖️ 포트폴리오", "🏖️ 시장 지표", "🏖️ 코멘트"])
 
     with tabs[0]:
         if cap_date:
