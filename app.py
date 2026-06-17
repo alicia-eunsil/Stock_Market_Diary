@@ -705,6 +705,80 @@ def build_portfolio_view(portfolio: pd.DataFrame, stock_history: pd.DataFrame, n
     return pd.DataFrame(rows)
 
 
+def build_portfolio_trend(portfolio: pd.DataFrame, stock_history: pd.DataFrame, name_map: dict[str, str]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if portfolio.empty or stock_history.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    rows = []
+    for holding in portfolio.to_dict("records"):
+        symbol = normalize_symbol(holding.get("symbol", ""))
+        avg_buy_price = float(holding.get("avg_buy_price", 0))
+        quantity = float(holding.get("quantity", 0))
+        buy_value = avg_buy_price * quantity
+        if buy_value <= 0:
+            continue
+
+        history = stock_history[stock_history["symbol"] == symbol].sort_values("date").copy()
+        if history.empty:
+            continue
+
+        holding_name = "" if pd.isna(holding.get("name", "")) else str(holding.get("name", "")).strip()
+        history_name = str(history["name"].dropna().iloc[-1]) if history["name"].notna().any() else ""
+        name = holding_name or history_name or name_map.get(symbol, symbol)
+        history["종목코드"] = symbol
+        history["종목명"] = name
+        history["매입금액"] = buy_value
+        history["평가금액"] = pd.to_numeric(history["close"], errors="coerce") * quantity
+        history["평가손익"] = history["평가금액"] - buy_value
+        history["수익률"] = (history["평가손익"] / buy_value) * 100.0
+        rows.append(history[["date", "종목코드", "종목명", "매입금액", "평가금액", "평가손익", "수익률"]])
+
+    if not rows:
+        return pd.DataFrame(), pd.DataFrame()
+
+    per_stock = pd.concat(rows, ignore_index=True).dropna(subset=["평가금액", "수익률"])
+    total = (
+        per_stock.groupby("date", as_index=False)[["매입금액", "평가금액"]]
+        .sum()
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
+    total["평가손익"] = total["평가금액"] - total["매입금액"]
+    total["수익률"] = (total["평가손익"] / total["매입금액"]) * 100.0
+    total["구분"] = "포트폴리오 합계"
+    return total, per_stock
+
+
+def portfolio_trend_chart(frame: pd.DataFrame, group: str, title: str) -> go.Figure:
+    fig = go.Figure()
+    if frame.empty:
+        return fig
+
+    for label, group_frame in frame.groupby(group, sort=False):
+        group_frame = group_frame.sort_values("date")
+        fig.add_trace(
+            go.Scatter(
+                x=group_frame["date"],
+                y=group_frame["수익률"],
+                mode="lines+markers",
+                name=str(label),
+                hovertemplate="%{x|%Y-%m-%d}<br>수익률 %{y:+.2f}%<extra>%{fullData.name}</extra>",
+            )
+        )
+
+    fig.add_hline(y=0, line_color="#9ca3af", line_dash="dot")
+    fig.update_layout(
+        title=title,
+        template="plotly_white",
+        height=360,
+        margin={"l": 20, "r": 20, "t": 50, "b": 20},
+        hovermode="x unified",
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "left", "x": 0},
+        yaxis_title="수익률 (%)",
+    )
+    return fig
+
+
 def style_portfolio_display(display: pd.DataFrame, source: pd.DataFrame) -> pd.io.formats.style.Styler:
     def cell_style(row: pd.Series) -> list[str]:
         styles = [""] * len(row)
@@ -796,6 +870,17 @@ def render_portfolio_panel(portfolio_path: Path, stock_history: pd.DataFrame, na
         display["기준일"] = pd.to_datetime(display["기준일"], errors="coerce").dt.date
     st.dataframe(style_portfolio_display(display, view), width="stretch", hide_index=True, height=360)
 
+    total_trend, stock_trend = build_portfolio_trend(portfolio, stock_history, name_map)
+    if not total_trend.empty and not stock_trend.empty:
+        st.subheader("수익률 추이")
+        trend_cols = st.columns([1, 1])
+        with trend_cols[0]:
+            st.plotly_chart(portfolio_trend_chart(total_trend, "구분", "포트폴리오 합계 수익률"), width="stretch")
+        with trend_cols[1]:
+            st.plotly_chart(portfolio_trend_chart(stock_trend, "종목명", "종목별 수익률"), width="stretch")
+    else:
+        st.caption("수익률 추이를 계산할 종가 데이터가 없습니다.")
+
     delete_labels = dict(zip(view["종목코드"], view["종목명"], strict=False))
     delete_symbol = st.selectbox(
         "삭제할 보유 종목",
@@ -873,7 +958,6 @@ def main() -> None:
     portfolio_df = load_portfolio(portfolio_path)
 
     st.title("Stock Market Dashboard")
-    st.caption("국내 시가총액 상위 종목, 관심종목, 주요 지수, 미국 10년물 금리, 데일리 코멘트")
 
     with st.sidebar:
         st.header("설정")
@@ -933,7 +1017,7 @@ def main() -> None:
             else:
                 render_market_metric_card(label, "-", None, None)
 
-    tabs = st.tabs(["종목 종가", "포트폴리오", "시장 지표", "코멘트"])
+    tabs = st.tabs(["🐬 종목 종가", "🐬 포트폴리오", "🐬 시장 지표", "🐬 코멘트"])
 
     with tabs[0]:
         if cap_date:
