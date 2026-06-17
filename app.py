@@ -697,7 +697,7 @@ def build_portfolio_view(portfolio: pd.DataFrame, stock_history: pd.DataFrame, n
                 "평가손익": profit,
                 "매입금액": buy_value,
                 "평가금액": current_value,
-                "-10% 가격": avg_buy_price * 0.9,
+                "-10% 가격": float(current_price) * 0.9 if current_price is not None and pd.notna(current_price) else None,
                 "기준일": latest.get("date"),
                 "메모": row.memo,
             }
@@ -946,11 +946,15 @@ def main() -> None:
             chart_options["label"] = chart_options["종목코드"] + " | " + chart_options["종목명"]
             option_labels = chart_options["label"].tolist()
             label_to_symbol = dict(zip(chart_options["label"], chart_options["종목코드"], strict=False))
-            default_labels = option_labels[: min(5, len(option_labels))]
+            symbol_to_label = dict(zip(chart_options["종목코드"], chart_options["label"], strict=False))
+            default_labels = [symbol_to_label[symbol] for symbol in portfolio_symbols if symbol in symbol_to_label]
+            if not default_labels:
+                default_labels = option_labels[: min(5, len(option_labels))]
             selected_chart_labels = st.multiselect(
                 "그래프에 표시할 종목",
                 options=option_labels,
                 default=default_labels,
+                key=f"chart_symbols_{'-'.join(portfolio_symbols)}",
                 placeholder="종목을 선택하세요",
             )
             chart_symbols = {label_to_symbol[label] for label in selected_chart_labels}
