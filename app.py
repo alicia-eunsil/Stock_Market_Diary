@@ -637,6 +637,10 @@ def load_portfolio(path: Path) -> pd.DataFrame:
 
 
 def save_portfolio(path: Path, frame: pd.DataFrame) -> None:
+    if not get_github_storage_config():
+        st.error("GitHub 영구 저장 설정이 없어 포트폴리오를 저장하지 않았습니다.")
+        st.stop()
+
     clean = frame.copy()
     for column in PORTFOLIO_COLUMNS:
         if column not in clean.columns:
@@ -810,6 +814,13 @@ def inject_metric_delta_color_overrides() -> None:
 
 def render_portfolio_panel(portfolio_path: Path, stock_history: pd.DataFrame, name_map: dict[str, str]) -> None:
     st.subheader("내 보유 종목")
+    github_storage_enabled = get_github_storage_config() is not None
+    if github_storage_enabled:
+        st.caption("저장 위치: GitHub 영구 저장소")
+    else:
+        st.error("GitHub 영구 저장 설정이 없습니다. 저장한 종목이 서버 재시작이나 재배포 때 사라질 수 있습니다.")
+        st.caption("Streamlit secrets에 GITHUB_TOKEN, GITHUB_DATA_REPO, GITHUB_DATA_BRANCH를 설정한 뒤 다시 저장하세요.")
+
     portfolio = load_portfolio(portfolio_path)
 
     with st.form("portfolio_add_form", clear_on_submit=True):
@@ -819,7 +830,7 @@ def render_portfolio_panel(portfolio_path: Path, stock_history: pd.DataFrame, na
         avg_buy_price = cols[2].number_input("매입가격", min_value=0.0, step=100.0)
         quantity = cols[3].number_input("보유수", min_value=0.0, step=1.0)
         memo = cols[4].text_input("메모", placeholder="계좌/전략 등")
-        submitted = st.form_submit_button("보유 종목 저장", type="primary")
+        submitted = st.form_submit_button("보유 종목 저장", type="primary", disabled=not github_storage_enabled)
         if submitted:
             normalized = normalize_symbol(symbol)
             if normalized == "000000" or avg_buy_price <= 0 or quantity <= 0:
@@ -1017,7 +1028,7 @@ def main() -> None:
             else:
                 render_market_metric_card(label, "-", None, None)
 
-    tabs = st.tabs(["🏖️ 종목 종가", "🏖️ 포트폴리오", "🏖️ 시장 지표", "🏖️ 코멘트"])
+    tabs = st.tabs(["종목 종가", "포트폴리오", "시장 지표", "코멘트"])
 
     with tabs[0]:
         if cap_date:
