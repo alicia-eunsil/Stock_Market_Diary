@@ -877,6 +877,15 @@ def inject_metric_delta_color_overrides() -> None:
         ::-webkit-scrollbar-thumb:hover {
             background: #374151;
         }
+
+        div[data-testid="stDataFrame"] {
+            border: 2px solid #9ca3af;
+            border-radius: 8px;
+            box-shadow:
+                inset -18px 0 16px -18px rgba(17, 24, 39, 0.65),
+                inset 0 -18px 16px -18px rgba(17, 24, 39, 0.65);
+            padding: 2px;
+        }
         </style>
         """,
         unsafe_allow_html=True,
