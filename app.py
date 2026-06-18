@@ -857,6 +857,26 @@ def inject_metric_delta_color_overrides() -> None:
             color: #2563eb !important;
             fill: #2563eb !important;
         }
+
+        ::-webkit-scrollbar {
+            width: 16px;
+            height: 16px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #e5e7eb;
+            border-radius: 8px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #6b7280;
+            border-radius: 8px;
+            border: 3px solid #e5e7eb;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #374151;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -935,6 +955,7 @@ def render_portfolio_panel(portfolio_path: Path, stock_history: pd.DataFrame, na
     display["수익률"] = display["수익률"].map(format_pct)
     if "기준일" in display.columns:
         display["기준일"] = pd.to_datetime(display["기준일"], errors="coerce").dt.date
+    st.caption("표 안에서 정렬하고 가로/세로로 스크롤할 수 있습니다.")
     st.dataframe(style_portfolio_display(display, view), width="stretch", hide_index=True, height=360)
 
     total_trend, stock_trend = build_portfolio_trend(portfolio, stock_history, name_map)
@@ -1007,6 +1028,7 @@ def render_comment_panel(comment_path: Path) -> None:
     view = comments.sort_values("created_at", ascending=False).head(30).rename(
         columns={"date": "날짜", "session": "구분", "comment": "코멘트", "created_at": "작성시각"}
     )
+    st.caption("표 안에서 정렬하고 스크롤할 수 있습니다.")
     st.dataframe(view, width="stretch", hide_index=True, height=320)
 
 
@@ -1124,6 +1146,7 @@ def main() -> None:
                 table[col] = table[col].map(format_pct)
             table["시가총액"] = table["시가총액"].map(format_market_cap)
             table = table.sort_values(["순위", "종목코드"], na_position="last").reset_index(drop=True)
+            st.caption("표 안에서 정렬하고 가로/세로로 스크롤할 수 있습니다.")
             st.dataframe(table, width="stretch", hide_index=True, height=520)
 
     with tabs[1]:
@@ -1142,6 +1165,7 @@ def main() -> None:
                 index_table = latest_change_table(index_history)
                 index_table["종가"] = index_table["종가"].map(lambda value: f"{value:,.2f}")
                 index_table["전일대비"] = index_table["전일대비"].map(format_pct)
+                st.caption("표 안에서 정렬할 수 있습니다.")
                 st.dataframe(index_table, width="stretch", hide_index=True)
         with cols[1]:
             if treasury_history.empty:
@@ -1154,6 +1178,7 @@ def main() -> None:
                 rate_table = latest_change_table(treasury_history)
                 rate_table["종가"] = rate_table["종가"].map(lambda value: f"{value:.2f}%")
                 rate_table["전일대비"] = rate_table["전일대비"].map(format_pct)
+                st.caption("표 안에서 정렬할 수 있습니다.")
                 st.dataframe(rate_table, width="stretch", hide_index=True)
 
     with tabs[3]:
