@@ -12,6 +12,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
 from requests.utils import quote
 
@@ -888,6 +889,29 @@ def inject_metric_delta_color_overrides() -> None:
     )
 
 
+def collapse_sidebar_once() -> None:
+    if st.session_state.get("sidebar_collapse_requested"):
+        return
+
+    st.session_state["sidebar_collapse_requested"] = True
+    components.html(
+        """
+        <script>
+        const interval = setInterval(() => {
+            const button = window.parent.document.querySelector('button[aria-label="Close sidebar"]');
+            if (button) {
+                button.click();
+                clearInterval(interval);
+            }
+        }, 100);
+        setTimeout(() => clearInterval(interval), 3000);
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
 def render_portfolio_panel(portfolio_path: Path, stock_history: pd.DataFrame, name_map: dict[str, str]) -> None:
     st.subheader("내 보유 종목")
     firebase_storage_enabled = False
@@ -1037,6 +1061,7 @@ def render_comment_panel(comment_path: Path) -> None:
 
 def main() -> None:
     require_access_code()
+    collapse_sidebar_once()
     if st.session_state.get("app_cache_version") != APP_VERSION:
         st.cache_data.clear()
         st.session_state["app_cache_version"] = APP_VERSION
