@@ -28,7 +28,7 @@ try:
 except Exception:  # noqa: BLE001
     yf = None
 
-st.set_page_config(page_title="Stock Market Dashboard", page_icon="🏖️", layout="wide")
+st.set_page_config(page_title="Stock Market Dashboard", page_icon="🏖️", layout="wide", initial_sidebar_state="collapsed")
 
 
 GLOBAL_INDEX_TICKERS = {
