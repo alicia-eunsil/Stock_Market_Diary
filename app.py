@@ -892,6 +892,26 @@ def inject_metric_delta_color_overrides() -> None:
     )
 
 
+def render_table_scroll_hint(message: str = "정렬 가능 · 표 안에서 좌우/상하로 스크롤할 수 있습니다.") -> None:
+    st.markdown(
+        f"""
+        <div style="
+            border:1px solid #9ca3af;
+            background:#f3f4f6;
+            color:#374151;
+            border-radius:8px;
+            padding:8px 12px;
+            font-size:13px;
+            font-weight:700;
+            margin:4px 0 8px 0;
+        ">
+            {message}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_portfolio_panel(portfolio_path: Path, stock_history: pd.DataFrame, name_map: dict[str, str]) -> None:
     st.subheader("내 보유 종목")
     firebase_storage_enabled = False
@@ -1155,7 +1175,7 @@ def main() -> None:
                 table[col] = table[col].map(format_pct)
             table["시가총액"] = table["시가총액"].map(format_market_cap)
             table = table.sort_values(["순위", "종목코드"], na_position="last").reset_index(drop=True)
-            st.caption("표 안에서 정렬하고 가로/세로로 스크롤할 수 있습니다.")
+            render_table_scroll_hint("종목별 지표 표 · 컬럼 제목을 눌러 정렬 · 표 안에서 좌우/상하 스크롤")
             st.dataframe(table, width="stretch", hide_index=True, height=520)
 
     with tabs[1]:
