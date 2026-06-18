@@ -12,7 +12,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
 from requests.utils import quote
 
@@ -29,7 +28,7 @@ try:
 except Exception:  # noqa: BLE001
     yf = None
 
-st.set_page_config(page_title="Stock Market Dashboard", page_icon="🏖️", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Stock Market Dashboard", page_icon="🏖️", layout="wide")
 
 
 GLOBAL_INDEX_TICKERS = {
@@ -983,80 +982,6 @@ def render_market_metric_card(label: str, value: str, delta: float | None, date_
     )
 
 
-def collapse_sidebar_on_initial_load() -> None:
-    components.html(
-        """
-        <script>
-        (() => {
-          const storageKey = "stockDiarySidebarCollapseApplied";
-          if (window.sessionStorage.getItem(storageKey) === "1") {
-            return;
-          }
-
-          const isVisible = (element) => {
-            if (!element) return false;
-            const rect = element.getBoundingClientRect();
-            const style = window.parent.getComputedStyle(element);
-            return rect.width > 80 && rect.height > 0 && style.visibility !== "hidden";
-          };
-
-          const findCollapseButton = (doc, sidebar) => {
-            const buttons = Array.from(doc.querySelectorAll("button"));
-            const labeledButton = buttons.find((button) => {
-              const label = [
-                button.getAttribute("aria-label"),
-                button.getAttribute("title"),
-                button.textContent,
-              ].filter(Boolean).join(" ").toLowerCase();
-              return label.includes("close sidebar") || label.includes("collapse sidebar") ||
-                (label.includes("sidebar") && label.includes("close")) ||
-                (label.includes("사이드바") && label.includes("닫"));
-            });
-            if (labeledButton) return labeledButton;
-
-            const sidebarRect = sidebar.getBoundingClientRect();
-            return buttons.find((button) => {
-              const rect = button.getBoundingClientRect();
-              return rect.width > 0 && rect.height > 0 &&
-                rect.top < 140 &&
-                rect.left >= sidebarRect.right - 90 &&
-                rect.left <= sidebarRect.right + 90;
-            });
-          };
-
-          let attempts = 0;
-          const timer = window.setInterval(() => {
-            attempts += 1;
-            const doc = window.parent.document;
-            const sidebar = doc.querySelector('[data-testid="stSidebar"]');
-
-            if (sidebar && !isVisible(sidebar)) {
-              window.sessionStorage.setItem(storageKey, "1");
-              window.clearInterval(timer);
-              return;
-            }
-
-            if (sidebar && isVisible(sidebar)) {
-              const button = findCollapseButton(doc, sidebar);
-              if (button) {
-                button.click();
-                window.sessionStorage.setItem(storageKey, "1");
-                window.clearInterval(timer);
-              }
-            }
-
-            if (attempts >= 40) {
-              window.clearInterval(timer);
-            }
-          }, 100);
-        })();
-        </script>
-        """,
-        height=0,
-        width=0,
-    )
-
-
 def render_comment_panel(comment_path: Path) -> None:
     st.subheader("아침/저녁 코멘트")
     comments = load_comments(comment_path)
@@ -1091,7 +1016,6 @@ def main() -> None:
         st.cache_data.clear()
         st.session_state["app_cache_version"] = APP_VERSION
     inject_metric_delta_color_overrides()
-    collapse_sidebar_on_initial_load()
 
     config = load_config()
     dashboard_cfg = config.get("stock_dashboard", {})
