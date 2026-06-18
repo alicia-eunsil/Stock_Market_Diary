@@ -28,7 +28,7 @@ try:
 except Exception:  # noqa: BLE001
     yf = None
 
-st.set_page_config(page_title="Stock Market Dashboard", page_icon="🏖️", layout="wide")
+st.set_page_config(page_title="Stock Market Dashboard", page_icon="🏖️", layout="wide", initial_sidebar_state="collapsed")
 
 
 GLOBAL_INDEX_TICKERS = {
@@ -858,55 +858,31 @@ def inject_metric_delta_color_overrides() -> None:
             fill: #2563eb !important;
         }
 
-        ::-webkit-scrollbar {
-            width: 16px;
-            height: 16px;
+        div[data-testid="stDataFrame"] * {
+            scrollbar-width: auto;
+            scrollbar-color: #6b7280 #e5e7eb;
         }
 
-        ::-webkit-scrollbar-track {
+        div[data-testid="stDataFrame"] *::-webkit-scrollbar {
+            width: 14px;
+            height: 14px;
+            display: block;
+        }
+
+        div[data-testid="stDataFrame"] *::-webkit-scrollbar-track {
             background: #e5e7eb;
-            border-radius: 8px;
         }
 
-        ::-webkit-scrollbar-thumb {
+        div[data-testid="stDataFrame"] *::-webkit-scrollbar-thumb {
             background: #6b7280;
             border-radius: 8px;
             border: 3px solid #e5e7eb;
         }
 
-        ::-webkit-scrollbar-thumb:hover {
+        div[data-testid="stDataFrame"] *::-webkit-scrollbar-thumb:hover {
             background: #374151;
         }
-
-        div[data-testid="stDataFrame"] {
-            border: 2px solid #9ca3af;
-            border-radius: 8px;
-            box-shadow:
-                inset -18px 0 16px -18px rgba(17, 24, 39, 0.65),
-                inset 0 -18px 16px -18px rgba(17, 24, 39, 0.65);
-            padding: 2px;
-        }
         </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def render_table_scroll_hint(message: str = "정렬 가능 · 표 안에서 좌우/상하로 스크롤할 수 있습니다.") -> None:
-    st.markdown(
-        f"""
-        <div style="
-            border:1px solid #9ca3af;
-            background:#f3f4f6;
-            color:#374151;
-            border-radius:8px;
-            padding:8px 12px;
-            font-size:13px;
-            font-weight:700;
-            margin:4px 0 8px 0;
-        ">
-            {message}
-        </div>
         """,
         unsafe_allow_html=True,
     )
@@ -984,7 +960,6 @@ def render_portfolio_panel(portfolio_path: Path, stock_history: pd.DataFrame, na
     display["수익률"] = display["수익률"].map(format_pct)
     if "기준일" in display.columns:
         display["기준일"] = pd.to_datetime(display["기준일"], errors="coerce").dt.date
-    st.caption("표 안에서 정렬하고 가로/세로로 스크롤할 수 있습니다.")
     st.dataframe(style_portfolio_display(display, view), width="stretch", hide_index=True, height=360)
 
     total_trend, stock_trend = build_portfolio_trend(portfolio, stock_history, name_map)
@@ -1057,7 +1032,6 @@ def render_comment_panel(comment_path: Path) -> None:
     view = comments.sort_values("created_at", ascending=False).head(30).rename(
         columns={"date": "날짜", "session": "구분", "comment": "코멘트", "created_at": "작성시각"}
     )
-    st.caption("표 안에서 정렬하고 스크롤할 수 있습니다.")
     st.dataframe(view, width="stretch", hide_index=True, height=320)
 
 
@@ -1175,7 +1149,6 @@ def main() -> None:
                 table[col] = table[col].map(format_pct)
             table["시가총액"] = table["시가총액"].map(format_market_cap)
             table = table.sort_values(["순위", "종목코드"], na_position="last").reset_index(drop=True)
-            render_table_scroll_hint("종목별 지표 표 · 컬럼 제목을 눌러 정렬 · 표 안에서 좌우/상하 스크롤")
             st.dataframe(table, width="stretch", hide_index=True, height=520)
 
     with tabs[1]:
@@ -1194,7 +1167,6 @@ def main() -> None:
                 index_table = latest_change_table(index_history)
                 index_table["종가"] = index_table["종가"].map(lambda value: f"{value:,.2f}")
                 index_table["전일대비"] = index_table["전일대비"].map(format_pct)
-                st.caption("표 안에서 정렬할 수 있습니다.")
                 st.dataframe(index_table, width="stretch", hide_index=True)
         with cols[1]:
             if treasury_history.empty:
@@ -1207,7 +1179,6 @@ def main() -> None:
                 rate_table = latest_change_table(treasury_history)
                 rate_table["종가"] = rate_table["종가"].map(lambda value: f"{value:.2f}%")
                 rate_table["전일대비"] = rate_table["전일대비"].map(format_pct)
-                st.caption("표 안에서 정렬할 수 있습니다.")
                 st.dataframe(rate_table, width="stretch", hide_index=True)
 
     with tabs[3]:
