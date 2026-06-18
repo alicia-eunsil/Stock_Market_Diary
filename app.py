@@ -12,7 +12,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
 from requests.utils import quote
 
@@ -29,7 +28,7 @@ try:
 except Exception:  # noqa: BLE001
     yf = None
 
-st.set_page_config(page_title="Stock Market Dashboard", page_icon="🏖️", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Stock Market Dashboard", page_icon="🏖️", layout="wide")
 
 
 GLOBAL_INDEX_TICKERS = {
@@ -858,57 +857,9 @@ def inject_metric_delta_color_overrides() -> None:
             color: #2563eb !important;
             fill: #2563eb !important;
         }
-
-        div[data-testid="stDataFrame"] * {
-            scrollbar-width: auto;
-            scrollbar-color: #6b7280 #e5e7eb;
-        }
-
-        div[data-testid="stDataFrame"] *::-webkit-scrollbar {
-            width: 14px;
-            height: 14px;
-            display: block;
-        }
-
-        div[data-testid="stDataFrame"] *::-webkit-scrollbar-track {
-            background: #e5e7eb;
-        }
-
-        div[data-testid="stDataFrame"] *::-webkit-scrollbar-thumb {
-            background: #6b7280;
-            border-radius: 8px;
-            border: 3px solid #e5e7eb;
-        }
-
-        div[data-testid="stDataFrame"] *::-webkit-scrollbar-thumb:hover {
-            background: #374151;
-        }
         </style>
         """,
         unsafe_allow_html=True,
-    )
-
-
-def collapse_sidebar_once() -> None:
-    if st.session_state.get("sidebar_collapse_requested"):
-        return
-
-    st.session_state["sidebar_collapse_requested"] = True
-    components.html(
-        """
-        <script>
-        const interval = setInterval(() => {
-            const button = window.parent.document.querySelector('button[aria-label="Close sidebar"]');
-            if (button) {
-                button.click();
-                clearInterval(interval);
-            }
-        }, 100);
-        setTimeout(() => clearInterval(interval), 3000);
-        </script>
-        """,
-        height=0,
-        width=0,
     )
 
 
@@ -1061,7 +1012,6 @@ def render_comment_panel(comment_path: Path) -> None:
 
 def main() -> None:
     require_access_code()
-    collapse_sidebar_once()
     if st.session_state.get("app_cache_version") != APP_VERSION:
         st.cache_data.clear()
         st.session_state["app_cache_version"] = APP_VERSION
