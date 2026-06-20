@@ -964,17 +964,35 @@ def render_portfolio_panel(portfolio_path: Path, stock_history: pd.DataFrame, na
 def render_market_metric_card(label: str, value: str, delta: float | None, date_value) -> None:
     if delta is None or pd.isna(delta):
         delta_text = "-"
+        delta_icon = "→"
         delta_color = "#6b7280"
+        delta_bg = "#f3f4f6"
     else:
         delta_text = format_pct(delta)
-        delta_color = "#dc2626" if float(delta) > 0 else ("#2563eb" if float(delta) < 0 else "#6b7280")
+        if float(delta) > 0:
+            delta_icon = "↑"
+            delta_color = "#dc2626"
+            delta_bg = "#fee2e2"
+        elif float(delta) < 0:
+            delta_icon = "↓"
+            delta_color = "#2563eb"
+            delta_bg = "#dbeafe"
+        else:
+            delta_icon = "→"
+            delta_color = "#6b7280"
+            delta_bg = "#f3f4f6"
     date_text = "-" if date_value is None or pd.isna(date_value) else str(date_value)
     st.markdown(
         f"""
-        <div style="border:1px solid #e5e7eb; border-radius:8px; padding:12px 14px; min-height:118px;">
+        <div style="border:1px solid #e5e7eb; border-radius:8px; padding:12px 14px; min-height:132px;">
             <div style="font-size:13px; color:#6b7280; font-weight:700;">{label}</div>
             <div style="font-size:25px; color:#111827; font-weight:800; margin-top:8px;">{value}</div>
-            <div style="font-size:14px; color:{delta_color}; font-weight:800; margin-top:6px;">전일대비 {delta_text}</div>
+            <div style="margin-top:8px;">
+                <span style="display:inline-flex; align-items:center; gap:4px; width:fit-content; border-radius:999px; padding:3px 10px; background:{delta_bg}; color:{delta_color}; font-size:14px; line-height:1.35; font-weight:800;">
+                    <span style="font-size:16px;">{delta_icon}</span>
+                    <span>{delta_text}</span>
+                </span>
+            </div>
             <div style="font-size:12px; color:#6b7280; margin-top:8px;">기준일: {date_text}</div>
         </div>
         """,

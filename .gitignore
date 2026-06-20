@@ -12,3 +12,4 @@ data/signals/
 data/validation/
 data/cache/
 secrets.json
+*firebase-adminsdk*.json
