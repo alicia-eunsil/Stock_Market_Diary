@@ -545,7 +545,6 @@ def period_return(frame: pd.DataFrame, periods: int) -> float | None:
 def line_chart(frame: pd.DataFrame, x: str, y: str, group: str, title: str, normalize: bool = False) -> go.Figure:
     fig = go.Figure()
     if frame.empty:
-        fig.update_layout(title=title)
         return fig
 
     for label, item in frame.groupby(group, sort=False):
@@ -557,11 +556,10 @@ def line_chart(frame: pd.DataFrame, x: str, y: str, group: str, title: str, norm
 
     y_title = "Indexed 100" if normalize else "Price"
     fig.update_layout(
-        title={"text": title, "x": 0, "xanchor": "left"},
         height=420,
-        margin={"l": 20, "r": 20, "t": 60, "b": 70},
+        margin={"l": 20, "r": 20, "t": 58, "b": 28},
         hovermode="x unified",
-        legend={"orientation": "h", "yanchor": "top", "y": -0.16, "xanchor": "left", "x": 0},
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.08, "xanchor": "left", "x": 0},
         yaxis_title=y_title,
     )
     return fig
@@ -823,12 +821,11 @@ def portfolio_trend_chart(frame: pd.DataFrame, group: str, title: str) -> go.Fig
 
     fig.add_hline(y=0, line_color="#9ca3af", line_dash="dot")
     fig.update_layout(
-        title={"text": title, "x": 0, "xanchor": "left"},
         template="plotly_white",
         height=360,
-        margin={"l": 20, "r": 20, "t": 60, "b": 70},
+        margin={"l": 20, "r": 20, "t": 58, "b": 28},
         hovermode="x unified",
-        legend={"orientation": "h", "yanchor": "top", "y": -0.18, "xanchor": "left", "x": 0},
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.08, "xanchor": "left", "x": 0},
         yaxis_title="수익률 (%)",
     )
     return fig
@@ -940,7 +937,9 @@ def render_portfolio_panel(portfolio_path: Path, stock_history: pd.DataFrame, na
     total_trend, stock_trend = build_portfolio_trend(portfolio, stock_history, name_map)
     if not total_trend.empty and not stock_trend.empty:
         st.subheader("수익률 추이")
+        st.markdown("#### 포트폴리오 합계 수익률")
         st.plotly_chart(portfolio_trend_chart(total_trend, "구분", "포트폴리오 합계 수익률"), width="stretch")
+        st.markdown("#### 종목별 수익률")
         st.plotly_chart(portfolio_trend_chart(stock_trend, "종목명", "종목별 수익률"), width="stretch")
     else:
         st.caption("수익률 추이를 계산할 종가 데이터가 없습니다.")
@@ -1128,18 +1127,27 @@ def main() -> None:
             if chart_history.empty:
                 st.info("그래프에 표시할 종목을 선택하세요.")
             else:
+                st.markdown("#### 선택 종목 일별 종가")
                 st.plotly_chart(
-                    line_chart(chart_history, "date", "close", "name", "선택 종목 일별 종가", normalize=normalize),
+                    line_chart(chart_history, "date", "close", "name", "", normalize=normalize),
                     width="stretch",
                 )
             table = summary.copy()
             for col in ["종가"]:
                 table[col] = table[col].map(format_krw)
-            for col in ["1일", "5일", "20일"]:
-                table[col] = table[col].map(format_pct)
             table["시가총액"] = table["시가총액"].map(format_market_cap)
             table = table.sort_values(["순위", "종목코드"], na_position="last").reset_index(drop=True)
-            st.dataframe(table, width="stretch", hide_index=True, height=520)
+            st.dataframe(
+                table,
+                width="stretch",
+                hide_index=True,
+                height=520,
+                column_config={
+                    "1일": st.column_config.NumberColumn("1일", format="%+.2f%%"),
+                    "5일": st.column_config.NumberColumn("5일", format="%+.2f%%"),
+                    "20일": st.column_config.NumberColumn("20일", format="%+.2f%%"),
+                },
+            )
 
     with tabs[1]:
         render_portfolio_panel(portfolio_path, stock_history, symbol_names)
@@ -1150,8 +1158,9 @@ def main() -> None:
             if index_history.empty:
                 st.warning("지수 데이터가 없습니다.")
             else:
+                st.markdown("#### 코스피/코스닥/나스닥")
                 st.plotly_chart(
-                    line_chart(index_history, "date", "close", "label", "코스피/코스닥/나스닥", normalize=True),
+                    line_chart(index_history, "date", "close", "label", "", normalize=True),
                     width="stretch",
                 )
                 index_table = latest_change_table(index_history)
@@ -1162,8 +1171,9 @@ def main() -> None:
             if treasury_history.empty:
                 st.warning("미국 10년물 금리 데이터가 없습니다.")
             else:
+                st.markdown("#### 미국 국채 10년 금리")
                 st.plotly_chart(
-                    line_chart(treasury_history, "date", "close", "label", "미국 국채 10년 금리", normalize=False),
+                    line_chart(treasury_history, "date", "close", "label", "", normalize=False),
                     width="stretch",
                 )
                 rate_table = latest_change_table(treasury_history)
