@@ -940,11 +940,8 @@ def render_portfolio_panel(portfolio_path: Path, stock_history: pd.DataFrame, na
     total_trend, stock_trend = build_portfolio_trend(portfolio, stock_history, name_map)
     if not total_trend.empty and not stock_trend.empty:
         st.subheader("수익률 추이")
-        trend_cols = st.columns([1, 1])
-        with trend_cols[0]:
-            st.plotly_chart(portfolio_trend_chart(total_trend, "구분", "포트폴리오 합계 수익률"), width="stretch")
-        with trend_cols[1]:
-            st.plotly_chart(portfolio_trend_chart(stock_trend, "종목명", "종목별 수익률"), width="stretch")
+        st.plotly_chart(portfolio_trend_chart(total_trend, "구분", "포트폴리오 합계 수익률"), width="stretch")
+        st.plotly_chart(portfolio_trend_chart(stock_trend, "종목명", "종목별 수익률"), width="stretch")
     else:
         st.caption("수익률 추이를 계산할 종가 데이터가 없습니다.")
 
