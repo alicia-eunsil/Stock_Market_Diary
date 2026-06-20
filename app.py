@@ -557,11 +557,11 @@ def line_chart(frame: pd.DataFrame, x: str, y: str, group: str, title: str, norm
 
     y_title = "Indexed 100" if normalize else "Price"
     fig.update_layout(
-        title=title,
+        title={"text": title, "x": 0, "xanchor": "left"},
         height=420,
-        margin={"l": 20, "r": 20, "t": 50, "b": 20},
+        margin={"l": 20, "r": 20, "t": 60, "b": 70},
         hovermode="x unified",
-        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "left", "x": 0},
+        legend={"orientation": "h", "yanchor": "top", "y": -0.16, "xanchor": "left", "x": 0},
         yaxis_title=y_title,
     )
     return fig
@@ -823,12 +823,12 @@ def portfolio_trend_chart(frame: pd.DataFrame, group: str, title: str) -> go.Fig
 
     fig.add_hline(y=0, line_color="#9ca3af", line_dash="dot")
     fig.update_layout(
-        title=title,
+        title={"text": title, "x": 0, "xanchor": "left"},
         template="plotly_white",
         height=360,
-        margin={"l": 20, "r": 20, "t": 50, "b": 20},
+        margin={"l": 20, "r": 20, "t": 60, "b": 70},
         hovermode="x unified",
-        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "left", "x": 0},
+        legend={"orientation": "h", "yanchor": "top", "y": -0.18, "xanchor": "left", "x": 0},
         yaxis_title="수익률 (%)",
     )
     return fig
