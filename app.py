@@ -133,7 +133,7 @@ def require_access_code() -> None:
     if st.session_state.get("access_granted"):
         return
 
-    st.title("Stock Market Dashboard")
+    st.title("Alicia's Stoooock Market Diary")
     entered_code = st.text_input("접속코드", type="password")
     if st.button("확인", type="primary"):
         if entered_code == expected_code:
