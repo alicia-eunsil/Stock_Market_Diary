@@ -860,13 +860,60 @@ def style_portfolio_display(display: pd.DataFrame, source: pd.DataFrame) -> pd.i
     return display.style.apply(cell_style, axis=1)
 
 
-def inject_metric_delta_color_overrides() -> None:
+def inject_app_style_overrides() -> None:
     st.markdown(
         """
         <style>
         div[data-testid="stMetricDelta"] *[style*="rgb(9, 171, 59)"] {
             color: #2563eb !important;
             fill: #2563eb !important;
+        }
+
+        div[data-testid="stTabs"] div[role="tablist"] {
+            gap: 10px;
+            border-bottom: 0;
+            margin-bottom: 12px;
+        }
+
+        div[data-testid="stTabs"] button[role="tab"] {
+            border-radius: 8px;
+            border: 1px solid #e5e7eb;
+            min-height: 42px;
+            padding: 7px 14px;
+            color: #1f2937;
+            font-weight: 800;
+            box-shadow: 0 1px 2px rgba(17, 24, 39, 0.06);
+        }
+
+        div[data-testid="stTabs"] button[role="tab"]:nth-of-type(1) {
+            background: #eef2ff;
+            border-color: #c7d2fe;
+        }
+
+        div[data-testid="stTabs"] button[role="tab"]:nth-of-type(2) {
+            background: #ecfdf5;
+            border-color: #a7f3d0;
+        }
+
+        div[data-testid="stTabs"] button[role="tab"]:nth-of-type(3) {
+            background: #fff7ed;
+            border-color: #fed7aa;
+        }
+
+        div[data-testid="stTabs"] button[role="tab"]:nth-of-type(4) {
+            background: #fdf2f8;
+            border-color: #fbcfe8;
+        }
+
+        div[data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
+            border-color: #111827;
+            color: #111827;
+            box-shadow: 0 2px 8px rgba(17, 24, 39, 0.14);
+        }
+
+        div[data-testid="stTabs"] button[role="tab"] p {
+            font-size: 15px;
+            font-weight: 800;
         }
         </style>
         """,
@@ -1043,7 +1090,7 @@ def main() -> None:
     if st.session_state.get("app_cache_version") != APP_VERSION:
         st.cache_data.clear()
         st.session_state["app_cache_version"] = APP_VERSION
-    inject_metric_delta_color_overrides()
+    inject_app_style_overrides()
 
     config = load_config()
     dashboard_cfg = config.get("stock_dashboard", {})
