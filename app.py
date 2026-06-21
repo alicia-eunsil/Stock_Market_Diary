@@ -565,6 +565,20 @@ def line_chart(frame: pd.DataFrame, x: str, y: str, group: str, title: str, norm
     return fig
 
 
+def indexed_100_latest(frame: pd.DataFrame, x: str, y: str, group: str) -> pd.DataFrame:
+    rows = []
+    if frame.empty:
+        return pd.DataFrame(rows)
+
+    for label, item in frame.groupby(group, sort=False):
+        item = item.sort_values(x).copy()
+        values = pd.to_numeric(item[y], errors="coerce").dropna()
+        if values.empty or values.iloc[0] == 0:
+            continue
+        rows.append({"지표": str(label), "시작일=100": values.iloc[-1] / values.iloc[0] * 100.0})
+    return pd.DataFrame(rows)
+
+
 def load_comments(path: Path) -> pd.DataFrame:
     try:
         collection = get_firestore_collection("comments")
@@ -1163,6 +1177,12 @@ def main() -> None:
                     line_chart(index_history, "date", "close", "label", "", normalize=True),
                     width="stretch",
                 )
+                indexed_summary = indexed_100_latest(index_history, "date", "close", "label")
+                if not indexed_summary.empty:
+                    summary_text = " · ".join(
+                        f"{row['지표']} {row['시작일=100']:.2f}" for _, row in indexed_summary.iterrows()
+                    )
+                    st.caption(f"시작일=100 기준 최신값: {summary_text}")
                 index_table = latest_change_table(index_history)
                 index_table["종가"] = index_table["종가"].map(lambda value: f"{value:,.2f}")
                 index_table["전일대비"] = index_table["전일대비"].map(format_pct)
